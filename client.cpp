@@ -13,14 +13,34 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+#include <thread>
  
 using namespace std;
 
-int writeTCP(const int &FD, char* buffer, const string &name, const string &msg){
-  snprintf(buffer, 3+1, "%03d", (int)name.size());
+// thread (threadReadSocket,SocketFD).detach()
+
+
+//cd -l 45000   to try
+
+
+void threadReadSocket(int ServerFD){
+  char local_buffer[1000];
+  string msg;
+  int n;
+  while(true){
+    n = read(ServerFD,local_buffer,255);
+    if(n <= 0) break;
+    local_buffer[n] = '\0';
+    msg = local_buffer;
+    cout << msg << "\n";
+  }
+}
+
+int writeTCP(const int &FD, char* buffer, const string &nickname, const string &msg){
+  snprintf(buffer, 3+1, "%03d", (int)nickname.size());
   int n = 3;
-  snprintf(buffer+n, (int)name.size()+1, "%s", name.c_str());
-  n += name.size();
+  snprintf(buffer+n, (int)nickname.size()+1, "%s", nickname.c_str());
+  n += nickname.size();
   snprintf(buffer+n, 3+1, "%03d", (int)msg.size());
   n += 3;
   snprintf(buffer+n, (int)msg.size()+1, "%s",msg.c_str());
@@ -29,14 +49,14 @@ int writeTCP(const int &FD, char* buffer, const string &name, const string &msg)
   return n;
 }
 
-void readTCP(const int &FD, char* buffer, string &name, string &msg){
+void readTCP(const int &FD, char* buffer, string &nickname, string &msg){
   int n;
   n = read(FD,buffer,3);
   buffer[n] = '\0';
   int l = atoi(buffer);
   n = read(FD,buffer,l);
   buffer[n] = '\0';
-  name = buffer; //strcpy(name,buffer);
+  nickname = buffer; //strcpy(nickname,buffer);
   n = read(FD,buffer,3);
   buffer[n] = '\0';
   int ll = atoi(buffer);
@@ -52,6 +72,7 @@ int main(void)
   int ClientFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
   char buffer[256];
   int n;
+  string nickname, msg;
 
   if (-1 == ClientFD)
   {
@@ -62,7 +83,7 @@ int main(void)
   memset(&stSockAddr, 0, sizeof(struct sockaddr_in));
 
   stSockAddr.sin_family = AF_INET;
-  stSockAddr.sin_port = htons(8888);
+  stSockAddr.sin_port = htons(45000);
   Res = inet_pton(AF_INET, "10.0.2.15", &stSockAddr.sin_addr);
 
   if (0 > Res)
@@ -85,60 +106,32 @@ int main(void)
     exit(EXIT_FAILURE);
   }
 
-
-
-
-
-  write(ClientFD,"Client connected.",17); // n era la cantidad de bits leidos os escritos
   
-  string msg;
-  bzero(buffer,256);
-  n = read(ClientFD,buffer,256);
+
+
+  cin >> nickname;
+  cin.ignore();
+
+  write(ClientFD,nickname.c_str(),(int)nickname.size()); // n era la cantidad de bits leidos os escritos
+  
+  n = read(ClientFD,buffer,255);
   if (n < 0) perror("ERROR reading from socket");
   buffer[n] = '\0';
   msg = buffer;
-  //printf("Server: [%s]\n",buffer);
   cout << msg << "\n";
 
-  string name;
+  thread t(threadReadSocket,ClientFD);
+  t.detach();
+
+
   while(true){
-    cin >> name;
-    cin.ignore();
     getline(cin,msg);
-    
+    write(ClientFD,msg.c_str(),(int)msg.size());
+  
     if (msg == "exit") {
-      printf("Servidor cerró la conexión\n");
+      cout << "Servidor cerró la conexión\n";
       break;
     }
-
-    writeTCP(ClientFD,buffer,name,msg);
-    
-
-
-    readTCP(ClientFD,buffer,name,msg);
-    cout << name << ": " << msg << "\n";
-    
-    /*
-    cout << "IMPRIMIENDO BUFFER TEST\n";
-    for(int i = 0; i < n; i++){
-      cout << buffer[i];
-    }
-    cout << "\n";
-    */
-    
-    /*    
-    //scanf("%s",newMessage); usamos fgets para mensajes con espacios 
-    fgets(newMessage,256,stdin);
-    n = write(ClientFD,newMessage,256);
-    bzero(buffer,256);
-    n = read(ClientFD,buffer,256);
-    buffer[strcspn(buffer, "\n")] = '\0';
-    printf("Server: [%s]\n",buffer);
-    if (strncmp(buffer, "exit", 4) == 0) {
-      printf("Servidor cerró la conexión\n");
-      break;
-    }
-    */
   }
 
 

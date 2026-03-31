@@ -13,14 +13,44 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+#include <map>
+#include <thread>
 
 using namespace std;
 
-int writeTCP(const int &FD, char* buffer, const string &name, const string &msg){
-  snprintf(buffer, 3+1, "%03d", (int)name.size());
+map<string,int> clients;
+bool working = true;
+
+
+void threadReadSocket(int ClientFD){
+  char local_buffer[1000];
+  string msg;
+  int n;
+  while(true){
+    n = read(ClientFD,local_buffer,255);
+    local_buffer[n] = '\0';
+    msg = local_buffer;
+    if(n <= 0 || msg == "exit"){
+        for(auto it = clients.begin(); it != clients.end(); ){
+
+          if(it->second == ClientFD) it = clients.erase(it);
+          else ++it;
+        }
+        if(clients.empty()) working = false;
+        close(ClientFD);
+        break;
+    }
+    for(auto &u : clients){
+       write(u.second,msg.c_str(),(int)msg.size());
+    }
+  }
+}
+
+int writeTCP(const int &FD, char* buffer, const string &nickname, const string &msg){
+  snprintf(buffer, 3+1, "%03d", (int)nickname.size());
   int n = 3;
-  snprintf(buffer+n, (int)name.size()+1, "%s", name.c_str());
-  n += name.size();
+  snprintf(buffer+n, (int)nickname.size()+1, "%s", nickname.c_str());
+  n += nickname.size();
   snprintf(buffer+n, 3+1, "%03d", (int)msg.size());
   n += 3;
   snprintf(buffer+n, (int)msg.size()+1, "%s",msg.c_str());
@@ -29,14 +59,14 @@ int writeTCP(const int &FD, char* buffer, const string &name, const string &msg)
   return n;
 }
 
-void readTCP(const int &FD, char* buffer, string &name, string &msg){
+void readTCP(const int &FD, char* buffer, string &nickname, string &msg){
   int n;
   n = read(FD,buffer,3);
   buffer[n] = '\0';
   int l = atoi(buffer);
   n = read(FD,buffer,l);
   buffer[n] = '\0';
-  name = buffer; //strcpy(name,buffer);
+  nickname = buffer; //strcpy(nickname,buffer);
   n = read(FD,buffer,3);
   buffer[n] = '\0';
   int ll = atoi(buffer);
@@ -61,7 +91,7 @@ int main(void)
   memset(&stSockAddr, 0, sizeof(struct sockaddr_in));
 
   stSockAddr.sin_family = AF_INET;
-  stSockAddr.sin_port = htons(8888);
+  stSockAddr.sin_port = htons(45000);
   stSockAddr.sin_addr.s_addr = INADDR_ANY;
 
   if(-1 == bind(ServerFD,(const struct sockaddr *)&stSockAddr, sizeof(struct sockaddr_in)))
@@ -77,67 +107,45 @@ int main(void)
     close(ServerFD);
     exit(EXIT_FAILURE);
   }
-
+  /*
   int ClientFD = accept(ServerFD, NULL, NULL); // con esto acepta solo un cliente
   if(0 > ClientFD){
     perror("error accept failed");
     close(ServerFD);
     exit(EXIT_FAILURE);
   }
+  */
+  
 
+  
 
-  string name, msg;
-  n = read(ClientFD,buffer,256);
-  buffer[n] ='\0';
-  msg = buffer;
-  cout << msg << "\n";
-  write(ClientFD, "Connected to server.", 20);
-
+  string nickname, msg;
 
   while(true){
     
-    readTCP(ClientFD,buffer,name,msg);
-    cout << name << ": " << msg << "\n";
-
-
-
-    cin >> name;
-    cin.ignore();
-    getline(cin,msg);
-    
-    if (name == "exit" || msg == "exit") {
-      printf("Cerrando servidor...\n");
-      shutdown(ClientFD, SHUT_RDWR);
-      close(ClientFD);
-      break;
+    int ClientFD = accept(ServerFD, NULL, NULL);
+    if(ClientFD > 0){
+      n = read(ClientFD,buffer,255);
+      buffer[n] = '\0';
+      nickname = buffer;
+      clients[nickname] = ClientFD; 
+      cout << nickname << " connected\n";
+      write(ClientFD, "Connected to server.", 20);
     }
 
-    writeTCP(ClientFD,buffer,name,msg);
-
+    thread t(threadReadSocket,ClientFD);
+    t.detach();
     /*
-    bzero(buffer,256);
-    n = read(ClientFD,buffer,256);
-    if (n < 0) perror("ERROR reading from socket");
-    buffer[strcspn(buffer, "\n")] = '\0';
-    printf("Cliente: [%s]\n",buffer);
-
-    //n = write(ClientFD,"I got your message",256);
-    char newMessage[256];
-    fgets(newMessage,256,stdin);
-    if (strncmp(newMessage, "exit", 4) == 0) {
+    if (nickname == "exit" || msg == "exit") {
       printf("Cerrando servidor...\n");
       shutdown(ClientFD, SHUT_RDWR);
       close(ClientFD);
       break;
     }
-    n = write(ClientFD,newMessage,256);
     */
 
-    if (n < 0) perror("ERROR writing to socket");
-
-    //shutdown(ClientFD, SHUT_RDWR);
-
-    //close(ClientFD); // 
+    writeTCP(ClientFD,buffer,nickname,msg);
+    if(!working) break;
   }
 
   close(ServerFD);
@@ -145,4 +153,4 @@ int main(void)
 }
 
 
-// para matar el puerto     sudo fuser -k 8888/tcp
+// para matar el puerto     sudo fuser -k 45000/tcp
