@@ -23,19 +23,6 @@ using namespace std;
 //cd -l 45000   to try
 
 
-void threadReadSocket(int ServerFD){
-  char local_buffer[1000];
-  string msg;
-  int n;
-  while(true){
-    n = read(ServerFD,local_buffer,255);
-    if(n <= 0) break;
-    local_buffer[n] = '\0';
-    msg = local_buffer;
-    cout << msg << "\n";
-  }
-}
-
 int writeTCP(const int &FD, char* buffer, const string &nickname, const string &msg){
   snprintf(buffer, 3+1, "%03d", (int)nickname.size());
   int n = 3;
@@ -49,8 +36,8 @@ int writeTCP(const int &FD, char* buffer, const string &nickname, const string &
   return n;
 }
 
-void readTCP(const int &FD, char* buffer, string &nickname, string &msg){
-  int n;
+int readTCP(const int &FD, char* buffer, string &nickname, string &msg){
+  int n, total = 6;
   n = read(FD,buffer,3);
   buffer[n] = '\0';
   int l = atoi(buffer);
@@ -63,7 +50,24 @@ void readTCP(const int &FD, char* buffer, string &nickname, string &msg){
   n = read(FD,buffer,ll);
   buffer[n] = '\0';
   msg = buffer;
+  total += msg.size()+ nickname.size();
+  return total;
 }
+
+void threadReadSocket(int ServerFD){
+  char local_buffer[1000];
+  string nickname,msg;
+  int n;
+  while(true){
+    //n = read(ServerFD,local_buffer,255);
+    readTCP(ServerFD,local_buffer,nickname,msg);
+    //if(n <= 0) break;
+    //local_buffer[n] = '\0';
+    //msg = local_buffer;
+    cout << nickname << ": " << msg << "\n";
+  }
+}
+
 
 int main(void)
 {
@@ -125,8 +129,11 @@ int main(void)
 
 
   while(true){
+    cin >> nickname;
+    cin.ignore();
     getline(cin,msg);
-    write(ClientFD,msg.c_str(),(int)msg.size());
+    //write(ClientFD,msg.c_str(),(int)msg.size());
+    writeTCP(ClientFD,buffer,nickname,msg);
   
     if (msg == "exit") {
       cout << "Servidor cerró la conexión\n";

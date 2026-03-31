@@ -22,30 +22,6 @@ map<string,int> clients;
 bool working = true;
 
 
-void threadReadSocket(int ClientFD){
-  char local_buffer[1000];
-  string msg;
-  int n;
-  while(true){
-    n = read(ClientFD,local_buffer,255);
-    local_buffer[n] = '\0';
-    msg = local_buffer;
-    if(n <= 0 || msg == "exit"){
-        for(auto it = clients.begin(); it != clients.end(); ){
-
-          if(it->second == ClientFD) it = clients.erase(it);
-          else ++it;
-        }
-        if(clients.empty()) working = false;
-        close(ClientFD);
-        break;
-    }
-    for(auto &u : clients){
-       write(u.second,msg.c_str(),(int)msg.size());
-    }
-  }
-}
-
 int writeTCP(const int &FD, char* buffer, const string &nickname, const string &msg){
   snprintf(buffer, 3+1, "%03d", (int)nickname.size());
   int n = 3;
@@ -59,8 +35,8 @@ int writeTCP(const int &FD, char* buffer, const string &nickname, const string &
   return n;
 }
 
-void readTCP(const int &FD, char* buffer, string &nickname, string &msg){
-  int n;
+int readTCP(const int &FD, char* buffer, string &nickname, string &msg){
+  int n, total = 6;
   n = read(FD,buffer,3);
   buffer[n] = '\0';
   int l = atoi(buffer);
@@ -73,6 +49,46 @@ void readTCP(const int &FD, char* buffer, string &nickname, string &msg){
   n = read(FD,buffer,ll);
   buffer[n] = '\0';
   msg = buffer;
+  total += msg.size() + nickname.size();
+  return total;
+}
+
+void threadReadSocket(int ClientFD,string local_nickname){
+  char local_buffer[1000];
+  string nickname,msg;
+  int n;
+  while(true){
+    //n = read(ClientFD,local_buffer,255);
+    n = readTCP(ClientFD,local_buffer,nickname,msg);
+    //local_buffer[n] = '\0';
+    //msg = local_buffer;
+    if(n <= 0 || msg == "exit" || nickname == "exit"){
+        /*  
+        for(auto it = clients.begin(); it != clients.end(); ){
+          if(it->second == ClientFD) it = clients.erase(it);
+          else ++it;
+        }
+        */
+        clients.erase(local_nickname);
+        if(clients.empty()) working = false;
+        close(ClientFD);
+        break;
+    }
+    if(nickname == "all"){
+      for(auto &u : clients){
+        //write(u.second,msg.c_str(),(int)msg.size());
+        writeTCP(u.second,local_buffer,nickname,msg);
+      }
+    }
+    else{
+      if(clients.find(nickname) != clients.end()){
+          writeTCP(clients[nickname],local_buffer,local_nickname,msg);
+      }
+      else{
+          writeTCP(ClientFD,local_buffer,"server","user not found");
+      }
+    }
+  }
 }
 
 int main(void)
@@ -131,10 +147,12 @@ int main(void)
       clients[nickname] = ClientFD; 
       cout << nickname << " connected\n";
       write(ClientFD, "Connected to server.", 20);
+      
+      thread t(threadReadSocket,ClientFD,nickname);
+      t.detach();
     }
 
-    thread t(threadReadSocket,ClientFD);
-    t.detach();
+    
     /*
     if (nickname == "exit" || msg == "exit") {
       printf("Cerrando servidor...\n");
@@ -144,7 +162,6 @@ int main(void)
     }
     */
 
-    writeTCP(ClientFD,buffer,nickname,msg);
     if(!working) break;
   }
 
