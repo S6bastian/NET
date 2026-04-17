@@ -15,157 +15,203 @@
 #include <string>
 #include <map>
 #include <thread>
+#include <vector>
+#include <sstream>
+#include <iomanip>
 
 using namespace std;
 
-map<string,int> clients;
-bool working = true;
+class ServerTCP{
+public:
+  ServerTCP(){
+    cout << "Inititalizing server\n\n\n";
+    ServerFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 
-
-int writeTCP(const int &FD, char* buffer, const string &nickname, const string &msg){
-  snprintf(buffer, 3+1, "%03d", (int)nickname.size());
-  int n = 3;
-  snprintf(buffer+n, (int)nickname.size()+1, "%s", nickname.c_str());
-  n += nickname.size();
-  snprintf(buffer+n, 3+1, "%03d", (int)msg.size());
-  n += 3;
-  snprintf(buffer+n, (int)msg.size()+1, "%s",msg.c_str());
-  n += msg.size();
-  write(FD,buffer,n);
-  return n;
-}
-
-int readTCP(const int &FD, char* buffer, string &nickname, string &msg){
-  int n, total = 6;
-  n = read(FD,buffer,3);
-  buffer[n] = '\0';
-  int l = atoi(buffer);
-  n = read(FD,buffer,l);
-  buffer[n] = '\0';
-  nickname = buffer; //strcpy(nickname,buffer);
-  n = read(FD,buffer,3);
-  buffer[n] = '\0';
-  int ll = atoi(buffer);
-  n = read(FD,buffer,ll);
-  buffer[n] = '\0';
-  msg = buffer;
-  total += msg.size() + nickname.size();
-  return total;
-}
-
-void threadReadSocket(int ClientFD,string local_nickname){
-  char local_buffer[1000];
-  string nickname,msg;
-  int n;
-  while(true){
-    //n = read(ClientFD,local_buffer,255);
-    n = readTCP(ClientFD,local_buffer,nickname,msg);
-    //local_buffer[n] = '\0';
-    //msg = local_buffer;
-    if(n <= 0 || msg == "exit" || nickname == "exit"){
-        /*  
-        for(auto it = clients.begin(); it != clients.end(); ){
-          if(it->second == ClientFD) it = clients.erase(it);
-          else ++it;
-        }
-        */
-        clients.erase(local_nickname);
-        if(clients.empty()) working = false;
-        close(ClientFD);
-        break;
+    if(-1 == ServerFD)
+    {
+      perror("can not create socket");
+      exit(EXIT_FAILURE);
     }
-    if(nickname == "all"){
-      for(auto &u : clients){
-        //write(u.second,msg.c_str(),(int)msg.size());
-        writeTCP(u.second,local_buffer,nickname,msg);
-      }
+
+    memset(&stSockAddr, 0, sizeof(struct sockaddr_in));
+
+    stSockAddr.sin_family = AF_INET;
+    stSockAddr.sin_port = htons(45000);
+    stSockAddr.sin_addr.s_addr = INADDR_ANY;
+
+    if(-1 == bind(ServerFD,(const struct sockaddr *)&stSockAddr, sizeof(struct sockaddr_in)))
+    {
+      perror("error bind failed");
+      close(ServerFD);
+      exit(EXIT_FAILURE);
     }
-    else{
-      if(clients.find(nickname) != clients.end()){
-          writeTCP(clients[nickname],local_buffer,local_nickname,msg);
+
+    if(-1 == listen(ServerFD, 10))
+    {
+      perror("error listen failed");
+      close(ServerFD);
+      exit(EXIT_FAILURE);
+    }
+    cout  << "*******************************************************\n"
+          << "*******************ServerTCP Listening*****************\n"
+          << "*******************************************************\n";
+  }
+  
+  ~ServerTCP(){
+    shutdown(ServerFD, SHUT_RDWR);
+    close(ServerFD);
+    cout  << "*********************Disconnected**********************\n";
+  }
+
+  int listening(){
+    int ClientFD = accept(ServerFD, NULL, NULL);
+    int received;
+    if(!working) return 0;
+    
+    if(ClientFD > 0){
+      vector<int> headBytes;
+      vector<string> content;
+      received = read_TCP(ClientFD,headBytes,content);
+      
+
+      if(content[0] == "L" && clients.find(content[1]) == clients.end()){
+        clients[content[1]] = ClientFD;
+        write_TCP(ClientFD,{1},{"K"});
+        thread t(&ServerTCP::threadReadSocket,this,ClientFD,content[1]);
+        t.detach();
       }
       else{
-          writeTCP(ClientFD,local_buffer,"server","user not found");
+        write_TCP(ClientFD,{1,5},{"E","Rejected"});
       }
+      
     }
+    return 1;
   }
-}
 
-int main(void)
-{
+
+private:
+  map<string,int> clients;
+  bool working = true;
+
   struct sockaddr_in stSockAddr;
   int ServerFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
   char buffer[256];
-  int n;
 
-  if(-1 == ServerFD)
-  {
-    perror("can not create socket");
-    exit(EXIT_FAILURE);
-  }
 
-  memset(&stSockAddr, 0, sizeof(struct sockaddr_in));
+  int write_TCP(const int &FD, const vector<int>& headBytes, const vector<string>& content){
+      ostringstream oss;
 
-  stSockAddr.sin_family = AF_INET;
-  stSockAddr.sin_port = htons(45000);
-  stSockAddr.sin_addr.s_addr = INADDR_ANY;
-
-  if(-1 == bind(ServerFD,(const struct sockaddr *)&stSockAddr, sizeof(struct sockaddr_in)))
-  {
-    perror("error bind failed");
-    close(ServerFD);
-    exit(EXIT_FAILURE);
-  }
-
-  if(-1 == listen(ServerFD, 10))
-  {
-    perror("error listen failed");
-    close(ServerFD);
-    exit(EXIT_FAILURE);
-  }
-  /*
-  int ClientFD = accept(ServerFD, NULL, NULL); // con esto acepta solo un cliente
-  if(0 > ClientFD){
-    perror("error accept failed");
-    close(ServerFD);
-    exit(EXIT_FAILURE);
-  }
-  */
-  
-
-  
-
-  string nickname, msg;
-
-  while(true){
-    
-    int ClientFD = accept(ServerFD, NULL, NULL);
-    if(ClientFD > 0){
-      n = read(ClientFD,buffer,255);
-      buffer[n] = '\0';
-      nickname = buffer;
-      clients[nickname] = ClientFD; 
-      cout << nickname << " connected\n";
-      write(ClientFD, "Connected to server.", 20);
+      oss << setw(headBytes[0]) << content[0];
       
-      thread t(threadReadSocket,ClientFD,nickname);
-      t.detach();
+      for(int i = 1; i < (int)headBytes.size(); i++){
+        oss << setfill('0') << setw(headBytes[i]) << content[i].length()
+          << content[i];
+      }
+      
+      string packet = oss.str();
+
+      int total_sent = write(FD, packet.data(), (int)packet.size());
+
+      if (total_sent == -1){
+          return -1;
+      }
+
+      return total_sent;
+  }
+
+  int read_TCP(const int &FD, vector<int>& headBytes, vector<string>& content){
+    char buffer[256];
+    int received = read(FD,buffer,1);
+    if(received == -1){
+      cout << "ERROR\n";
+      return -1;
+    }
+    
+    buffer[received] = '\0';
+    string opt = buffer;
+    
+    if(opt == "L"){
+      headBytes = {1,4};    //key,nickname
+      content = {"L",""};
+    }
+    else if(opt == "O"){
+      headBytes = {1};      //key
+      content = {"O"};
+    }
+    else if(opt == "B"){
+      headBytes = {1,7};    //key,msg
+      content = {"b",""};
+    }
+    else if(opt == "U"){
+      headBytes = {1,5,7};    //key,msg,nickname
+      content = {"u","",""};
+    }
+    else if(opt == "T"){
+      headBytes = {1};    //key
+      content = {"T"};
+    }
+    else if(opt == "F"){    //REVISAR FALTA IMPLENTAR
+      headBytes = {1,5};    //key,msg,nickname
+      content = {"u",""};
     }
 
+    for(int i = 1; i < (int)headBytes.size(); i++){
+      received = read(FD,buffer,headBytes[i]);
+      buffer[received] = '\0';
+      int msgSz = atoi(buffer);
+      received = read(FD,buffer,msgSz);
+      buffer[received] = '\0';
+      string data = buffer;
+      content[i] = data;
+    }
+    return received;
+  }
+  
+  void threadReadSocket(int ClientFD,string local_nickname){
+  vector<int> headBytes;
+  vector<string> content;
+  int received;
+  while(true){
+    received = read_TCP(ClientFD,headBytes,content);
     
-    /*
-    if (nickname == "exit" || msg == "exit") {
-      printf("Cerrando servidor...\n");
-      shutdown(ClientFD, SHUT_RDWR);
+    string opt = content[0];
+    if(opt == "O"){
+      write_TCP(ClientFD,{1},{"K"});
+      clients.erase(local_nickname);
+      if(clients.empty()) working = false;
       close(ClientFD);
       break;
     }
-    */
-
-    if(!working) break;
+    else if(opt == "B"){
+      for(const auto& client : clients){
+        write_TCP(client.second,{1,3,7},{"b",local_nickname,content[1]});
+      }
+    }
+    else if(opt == "U"){
+      if(clients.find(content[2]) == clients.end())
+        write_TCP(clients[local_nickname],{1,5},{"E","User not found\n"});
+      else 
+        write_TCP(clients[content[2]],{1,7,5},{"u",local_nickname,content[1]});
+    }
+    else{
+      write_TCP(clients[local_nickname],{1,5},{"E","My name is Giovanni Giorgio, but everybody calls me Giorgio\n"});
+    }
   }
+}
 
-  close(ServerFD);
+};
+
+
+
+
+
+
+int main(void)
+{
+  ServerTCP server;
+
+  while(server.listening());
+
   return 0;
 }
 

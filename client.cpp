@@ -33,10 +33,10 @@ public:
   ClientTCP(){
     logged = false;
 
-    ServerFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+    ClientFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     
 
-    if (-1 == ServerFD)
+    if (-1 == ClientFD)
     {
       perror("cannot create socket");
       exit(EXIT_FAILURE);
@@ -51,30 +51,32 @@ public:
     if (0 > Res)
     {
       perror("error: first parameter is not a valid address family");
-      close(ServerFD);
+      close(ClientFD);
       exit(EXIT_FAILURE);
     }
     else if (0 == Res)
     {
       perror("char string (second parameter does not contain valid ipaddress");
-      close(ServerFD);
+      close(ClientFD);
       exit(EXIT_FAILURE);
     }
 
-    if (-1 == connect(ServerFD, (const struct sockaddr *)&stSockAddr, sizeof(struct sockaddr_in)))
+    if (-1 == connect(ClientFD, (const struct sockaddr *)&stSockAddr, sizeof(struct sockaddr_in)))
     {
       perror("connect failed");
-      close(ServerFD);
+      close(ClientFD);
       exit(EXIT_FAILURE);
     }
 
-    thread t(threadReadSocket,ServerFD);
+    login();
+
+    thread t(&ClientTCP::threadReadSocket,this,ClientFD);
     t.detach();
   }
   
   ~ClientTCP(){
-    shutdown(ServerFD, SHUT_RDWR);
-    close(ServerFD);
+    shutdown(ClientFD, SHUT_RDWR);
+    close(ClientFD);
     cout  << "*********************Disconnected**********************\n";
   }
 
@@ -104,7 +106,7 @@ public:
         headBytes = {1};   //key
         content = {"O"};
 
-        write_TCP(ServerFD,headBytes,content);
+        write_TCP(ClientFD,headBytes,content);
         return 0;
         break;
 
@@ -115,7 +117,7 @@ public:
         content[0] = "B";
         getline(cin,content[1]);
 
-        write_TCP(ServerFD,headBytes,content);
+        write_TCP(ClientFD,headBytes,content);
         break;
       
       case 3:   //Unicast
@@ -128,14 +130,14 @@ public:
           getline(cin,content[i]);
         }
 
-        write_TCP(ServerFD,headBytes,content);
+        write_TCP(ClientFD,headBytes,content);
         break;
 
       case 4:   //List
         headBytes = {1};   //key
         content = {"T"};
 
-        write_TCP(ServerFD,headBytes,content);
+        write_TCP(ClientFD,headBytes,content);
         break;
     }
 
@@ -148,7 +150,7 @@ private:
 
   struct sockaddr_in stSockAddr;
   int Res;
-  int ServerFD;
+  int ClientFD;
   char buffer[256];
   int n;
   string nickname;
@@ -156,10 +158,24 @@ private:
 
   void login(){
     cout  << "*******************************************************\n"
-          << "**************ClientTCP Login**************************\n"
+          << "********************ClientTCP Login********************\n"
           << "*******************************************************\n";
-    cout << "Nickname: ";
-    cin >> nickname;
+    while(true){
+      cout << "Enter nickname: ";
+      cin >> nickname;
+      vector<int> headBytes = {1,4}; 
+      vector<string> content = {"L",nickname};
+      write_TCP(ClientFD,headBytes,content);
+      char ans[2];
+      read_TCP(ClientFD,ans);
+      if(ans[0] == 'O'){
+        cout << "Logged in succesfully\n";
+        logged = true;
+        break;
+      }
+      else cout << "There is already a " << nickname << "logged. Try another nickname\n";
+    }
+    
   }
 
   int write_TCP(const int &FD, const vector<int>& headBytes, const vector<string>& content){
@@ -221,9 +237,9 @@ private:
     return received;
   }
   
-  void threadReadSocket(const int& ServerFD){
+  void threadReadSocket(const int& ClientFD){
     char local_buffer[1000];
-    while(read_TCP(ServerFD,local_buffer) > 0);
+    while(read_TCP(ClientFD,local_buffer) > 0);
   }
 
 };
