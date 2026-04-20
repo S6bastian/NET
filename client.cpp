@@ -18,7 +18,35 @@
 #include <sstream>
 #include <vector>
 #include <map>
- 
+#include <fstream>
+
+#define LOGIN_BYTES 1,4                   //key,nick
+#define LOGOUT_BYTES 1                    //key
+#define BROADCAST_BYTES 1,7               //key,msg
+#define BROADCAST_RESPONSE_BYTES 1,3,7    //key,nick,msg
+#define UNICAST_BYTES 1,5,7               //key,msg,nick
+#define UNICAST_RESPONSE_BYTES 1,7,5      //key,nick,msg
+#define LIST_BYTES 1                      //key
+#define LIST_RESPONSE_BYTES 1,5           //key,size
+#define FILE_BYTES 1,5,5,5                //key,file,filename,destnick
+#define FILE_RESPONSE_BYTES 1,5,5,5       //key,file,filename,sourcenick
+#define OK_BYTES 1                        //key
+#define ERROR_BYTES 1,5                   //key,msg
+
+#define LOGIN_KEY "L"
+#define LOGOUT_KEY "O"
+#define BROADCAST_KEY "B"
+#define BROADCAST_RESPONSE_KEY "b"
+#define UNICAST_KEY "U"
+#define UNICAST_RESPONSE_KEY "u"
+#define LIST_KEY "T"
+#define LIST_RESPONSE_KEY "t"
+#define FILE_KEY "F"
+#define FILE_RESPONSE_KEY "f"
+#define OK_KEY "K"
+#define ERROR_KEY "E"
+
+
 using namespace std;
 
 // thread (threadReadSocket,SocketFD).detach()
@@ -32,7 +60,7 @@ class ClientTCP{
 public:
   ClientTCP(){
     logged = false;
-
+    
     ClientFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     
 
@@ -41,7 +69,7 @@ public:
       perror("cannot create socket");
       exit(EXIT_FAILURE);
     }
-
+    
     memset(&stSockAddr, 0, sizeof(struct sockaddr_in));
 
     stSockAddr.sin_family = AF_INET;
@@ -72,6 +100,17 @@ public:
 
     thread t(&ClientTCP::threadReadSocket,this,ClientFD);
     t.detach();
+
+    cout  << "*******************************************************\n"
+          << "**************ClientTCP Display Interface**************\n"
+          << "*******************************************************\n"
+      << "Choose an option:\n"
+      << "1. Logout\n"
+      << "2. Broadcast\n"
+      << "3. Unicast\n"
+      << "4. List\n"
+      << "5. File\n"
+      << "\n\n";
   }
   
   ~ClientTCP(){
@@ -81,63 +120,89 @@ public:
   }
 
   int display_interface(){
-    cout  << "*******************************************************\n"
-          << "**************ClientTCP Display Interface**************\n"
-          << "*******************************************************\n"
-      << "Choose an option:\n"
-      << "1. Logout\n"
-      << "2. Broadcast\n"
-      << "3. Unicast\n"
-      << "4. List\n"
-      << "\n\n";
-
-    int opt;
-    while(opt > 3 && opt < 1){
-      cout << "Select an allowed option: ";
-      cin >> opt;
-      cin.ignore();
-      cout << "\n";
+    int opt = -1;
+    while (true) {
+      cout << "Select an allowed option (1-4):\n";
+      
+      if (cin >> opt) {
+          if (opt >= 1 && opt <= 5) {
+              break;
+          } else {
+              cout << "ClientError: Number out of range.\n";
+          }
+      } else {
+          cout << "ClientError: Invalid input. Please enter a number.\n";
+          
+          cin.clear(); 
+          cin.ignore(10000, '\n');
+      }
     }
+    cin.ignore();
 
     vector<int> headBytes;
     vector<string> content;
     switch(opt){
       case 1:   //Logout
-        headBytes = {1};   //key
-        content = {"O"};
+        headBytes = {LOGOUT_BYTES};   //key
+        content = {LOGOUT_KEY};
 
         write_TCP(ClientFD,headBytes,content);
         return 0;
         break;
 
-      case 2:   //Broadcast
-        headBytes = {1,7};    //key,msg;
+      case 2:   //Broadcast        
+        headBytes = {BROADCAST_BYTES};    //key,msg;
         content.assign(headBytes.size(),"");
-        
-        content[0] = "B";
+  
+        content[0] = BROADCAST_KEY;
+        cout << "message: ";
         getline(cin,content[1]);
 
         write_TCP(ClientFD,headBytes,content);
         break;
       
       case 3:   //Unicast
-        headBytes = {1,5,7};    //key,msg,nickname;
+        headBytes = {UNICAST_BYTES};    //key,msg,nickname;
         content.assign(headBytes.size(),"");
         
-        content[0] = "U";
+        content[0] = UNICAST_KEY;
 
-        for(size_t i = 1; i < content.size(); i++){
-          getline(cin,content[i]);
-        }
+        cout << "message: ";
+        getline(cin,content[1]);
+        cout << "nickname: ";
+        getline(cin,content[2]);
 
         write_TCP(ClientFD,headBytes,content);
         break;
 
       case 4:   //List
-        headBytes = {1};   //key
-        content = {"T"};
+        headBytes = {LIST_BYTES};   //key
+        content = {LIST_KEY};
 
         write_TCP(ClientFD,headBytes,content);
+        break;
+
+      case 5://File
+        string fileName, destNick;
+        cout << "file name(.txt): ";
+        cin >> fileName;
+        cout << "nickname: ";
+        cin >> destNick;
+
+        ifstream file(fileName, ios::binary);
+        if (!file) {
+            cout << "ClientError: Couldn't open.\n";
+            break;
+        }
+
+        stringstream buffer;
+        buffer << file.rdbuf();
+        string fileContent = buffer.str();
+        file.close();
+
+        headBytes = {FILE_BYTES}; // 1, 5, 5, 5
+        content = {FILE_KEY, fileContent, fileName, destNick};
+        write_TCP(ClientFD, headBytes, content);
         break;
     }
 
@@ -161,19 +226,21 @@ private:
           << "********************ClientTCP Login********************\n"
           << "*******************************************************\n";
     while(true){
+      
       cout << "Enter nickname: ";
       cin >> nickname;
-      vector<int> headBytes = {1,4}; 
-      vector<string> content = {"L",nickname};
+      vector<int> headBytes = {LOGIN_BYTES}; 
+      vector<string> content = {LOGIN_KEY,nickname};
       write_TCP(ClientFD,headBytes,content);
-      char ans[2];
-      read_TCP(ClientFD,ans);
-      if(ans[0] == 'O'){
+
+      read_TCP(ClientFD,headBytes,content);
+      if(content[0] == OK_KEY){
         cout << "Logged in succesfully\n";
         logged = true;
         break;
       }
-      else cout << "There is already a " << nickname << "logged. Try another nickname\n";
+      else cout << "--->Error: "<< content[1] << "\n"; 
+      //cout << "There is already a " << nickname << " logged. Try another nickname\n";
     }
     
   }
@@ -199,47 +266,93 @@ private:
       return total_sent;
   }
 
-  int read_TCP(const int &FD, char* buffer){
-    vector<int> headBytes;
-    vector<string> content;
+  int read_TCP(const int &FD, vector<int>& headBytes, vector<string>& content){
+    char buffer[1000];
     int received = read(FD,buffer,1);
     if(received == -1){
-      cout << "ERROR\n";
+      headBytes = {ERROR_BYTES};
+      content = {ERROR_KEY,"client could not read the message"};
       return -1;
     }
     
     buffer[received] = '\0';
     string opt = buffer;
     
-    if(opt == "K") cout << "-->OK\n";
-    else if(opt == "E") cout << "-->ERROR\n";
-    else if(opt == "u"){
-      headBytes = {1,7,5};    //key,nickname,msg
-      content = {"u","[unicast]:","\n-->"};
+    if(opt == OK_KEY){
+      headBytes = {OK_BYTES};
+      content = {OK_KEY};
     }
-    else if(opt == "b"){
-      headBytes = {1,3,7};
-      content = {"b","[broadcast]:","\n-->"};
+    else if(opt == ERROR_KEY){
+      headBytes = {ERROR_BYTES};
+      content = {ERROR_KEY};
     }
-
+    else if(opt == BROADCAST_RESPONSE_KEY){
+      headBytes = {BROADCAST_RESPONSE_BYTES};
+      content = {BROADCAST_RESPONSE_KEY,"",""};
+    }
+    else if(opt == UNICAST_RESPONSE_KEY){
+      headBytes = {UNICAST_RESPONSE_BYTES};    
+      content = {UNICAST_RESPONSE_KEY,"",""};
+    }
+    else if(opt == LIST_RESPONSE_KEY){
+      headBytes = {LIST_RESPONSE_BYTES}; 
+      content = {LIST_RESPONSE_KEY, ""};
+    }
+    else if(opt == FILE_RESPONSE_KEY){
+      headBytes = {FILE_RESPONSE_BYTES}; // {1, 5, 5, 5}
+      content = {FILE_RESPONSE_KEY, "", "", ""};
+    }
     
-    //cout << buffer ;
 
-    for(int i = 1; i < (int)headBytes.size(); i++){
+    for(size_t i = 1; i < headBytes.size(); i++){
       received = read(FD,buffer,headBytes[i]);
       buffer[received] = '\0';
-      int msgSz = atoi(buffer);
-      received = read(FD,buffer,msgSz);
+      int msgSize = atoi(buffer);
+      received = read(FD,buffer,msgSize);
       buffer[received] = '\0';
-      cout << content[i] << " " << buffer << " ";
+      content[i] = buffer;
+      //cout << content[i] << " " << buffer << " ";
     }
-    cout << "\n";
+    //cout << "\n";
     return received;
   }
   
   void threadReadSocket(const int& ClientFD){
-    char local_buffer[1000];
-    while(read_TCP(ClientFD,local_buffer) > 0);
+    //char local_buffer[1000];
+    vector<int> headBytes;
+    vector<string> content;
+    while(read_TCP(ClientFD,headBytes,content) > 0){
+      string opt = content[0];
+
+      if(opt == OK_KEY){
+        cout << "--> OK\n";
+      }
+      else if(opt == ERROR_KEY){
+        cout << "Error: " << content[1];
+      }
+      else if(opt == BROADCAST_RESPONSE_KEY){
+        cout << "[broadcast] " << content[1] << ": " << content[2] << "\n";
+      }
+      else if(opt == UNICAST_RESPONSE_KEY){
+        cout << "[unicast] " << content[1] << ": " << content[2] << "\n";
+      }
+      else if(opt == LIST_RESPONSE_KEY){
+        cout << "\n[list] " << content[1] << "\n"; 
+      }
+      else if(opt == FILE_RESPONSE_KEY) {
+        string newFileName = "rec_" + content[2]; 
+        
+        ofstream outFile(newFileName, ios::binary);
+        if (outFile.is_open()) {
+            outFile << content[1];
+            outFile.close();
+            cout << "\n[File] " << content[3] << ": "
+                 << newFileName << ".txt\n";
+        } else {
+            cout << "\n[File] Error al intentar guardar el archivo recibido.\n";
+        }
+      }
+    }
   }
 
 };

@@ -18,6 +18,33 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <fstream>
+
+#define LOGIN_BYTES 1,4                   //key,nick
+#define LOGOUT_BYTES 1                    //key
+#define BROADCAST_BYTES 1,7               //key,msg
+#define BROADCAST_RESPONSE_BYTES 1,3,7    //key,nick,msg
+#define UNICAST_BYTES 1,5,7               //key,msg,nick
+#define UNICAST_RESPONSE_BYTES 1,7,5      //key,nick,msg
+#define LIST_BYTES 1                      //key
+#define LIST_RESPONSE_BYTES 1,5           //key,size
+#define FILE_BYTES 1,5,5,5                //key,file,filename,destnick
+#define FILE_RESPONSE_BYTES 1,5,5,5       //key,file,filename,sourcenick         
+#define OK_BYTES 1                        //key
+#define ERROR_BYTES 1,5                   //key,msg
+
+#define LOGIN_KEY "L"
+#define LOGOUT_KEY "O"
+#define BROADCAST_KEY "B"
+#define BROADCAST_RESPONSE_KEY "b"
+#define UNICAST_KEY "U"
+#define UNICAST_RESPONSE_KEY "u"
+#define LIST_KEY "T"
+#define LIST_RESPONSE_KEY "t"
+#define FILE_KEY "F"
+#define FILE_RESPONSE_KEY "f"
+#define OK_KEY "K"
+#define ERROR_KEY "E"
 
 using namespace std;
 
@@ -54,7 +81,7 @@ public:
     }
     cout  << "*******************************************************\n"
           << "*******************ServerTCP Listening*****************\n"
-          << "*******************************************************\n";
+          << "*******************************************************\n\n";
   }
   
   ~ServerTCP(){
@@ -74,14 +101,16 @@ public:
       received = read_TCP(ClientFD,headBytes,content);
       
 
-      if(content[0] == "L" && clients.find(content[1]) == clients.end()){
+      if(content[0] == LOGIN_KEY && clients.find(content[1]) == clients.end()){
+        cout << "---> " << content[1] << " joined\n"; 
         clients[content[1]] = ClientFD;
-        write_TCP(ClientFD,{1},{"K"});
+        write_TCP(ClientFD,{OK_BYTES},{OK_KEY});
         thread t(&ServerTCP::threadReadSocket,this,ClientFD,content[1]);
         t.detach();
       }
       else{
-        write_TCP(ClientFD,{1,5},{"E","Rejected"});
+        write_TCP(ClientFD,{ERROR_BYTES},{ERROR_KEY,"Rejected"});
+        close(ClientFD);
       }
       
     }
@@ -103,7 +132,7 @@ private:
 
       oss << setw(headBytes[0]) << content[0];
       
-      for(int i = 1; i < (int)headBytes.size(); i++){
+      for(size_t i = 1; i < headBytes.size(); i++){
         oss << setfill('0') << setw(headBytes[i]) << content[i].length()
           << content[i];
       }
@@ -120,42 +149,43 @@ private:
   }
 
   int read_TCP(const int &FD, vector<int>& headBytes, vector<string>& content){
-    char buffer[256];
+    char buffer[1000];
     int received = read(FD,buffer,1);
     if(received == -1){
-      cout << "ERROR\n";
+      headBytes = {ERROR_BYTES};
+      content = {ERROR_KEY,"server could not read the message"};
       return -1;
     }
     
     buffer[received] = '\0';
     string opt = buffer;
     
-    if(opt == "L"){
-      headBytes = {1,4};    //key,nickname
-      content = {"L",""};
+    if(opt == LOGIN_KEY){
+      headBytes = {LOGIN_BYTES};    //key,nickname
+      content = {LOGIN_KEY,""};
     }
-    else if(opt == "O"){
-      headBytes = {1};      //key
-      content = {"O"};
+    else if(opt == LOGOUT_KEY){
+      headBytes = {LOGOUT_BYTES};      //key
+      content = {LOGOUT_KEY};
     }
-    else if(opt == "B"){
-      headBytes = {1,7};    //key,msg
-      content = {"b",""};
+    else if(opt == BROADCAST_KEY){
+      headBytes = {BROADCAST_BYTES};    //key,msg
+      content = {BROADCAST_KEY,""};
     }
-    else if(opt == "U"){
-      headBytes = {1,5,7};    //key,msg,nickname
-      content = {"u","",""};
+    else if(opt == UNICAST_KEY){
+      headBytes = {UNICAST_BYTES};    //key,msg,nickname
+      content = {UNICAST_KEY,"",""};
     }
-    else if(opt == "T"){
-      headBytes = {1};    //key
-      content = {"T"};
+    else if(opt == LIST_KEY){
+      headBytes = {LIST_BYTES};    //key
+      content = {LIST_KEY};
     }
-    else if(opt == "F"){    //REVISAR FALTA IMPLENTAR
-      headBytes = {1,5};    //key,msg,nickname
-      content = {"u",""};
+    else if(opt == FILE_KEY){    //REVISAR FALTA IMPLENTAR!!!!!!!!!!
+      headBytes = {FILE_BYTES};    //key,msg,nickname
+      content = {FILE_KEY,""};
     }
 
-    for(int i = 1; i < (int)headBytes.size(); i++){
+    for(size_t i = 1; i < headBytes.size(); i++){
       received = read(FD,buffer,headBytes[i]);
       buffer[received] = '\0';
       int msgSz = atoi(buffer);
@@ -168,36 +198,81 @@ private:
   }
   
   void threadReadSocket(int ClientFD,string local_nickname){
-  vector<int> headBytes;
-  vector<string> content;
-  int received;
-  while(true){
-    received = read_TCP(ClientFD,headBytes,content);
-    
-    string opt = content[0];
-    if(opt == "O"){
-      write_TCP(ClientFD,{1},{"K"});
-      clients.erase(local_nickname);
-      if(clients.empty()) working = false;
-      close(ClientFD);
-      break;
-    }
-    else if(opt == "B"){
-      for(const auto& client : clients){
-        write_TCP(client.second,{1,3,7},{"b",local_nickname,content[1]});
+    vector<int> headBytes;
+    vector<string> content;
+    int received;
+    while(true){
+      received = read_TCP(ClientFD,headBytes,content);
+      
+      string opt = content[0];
+      if(opt == LOGOUT_KEY){
+        cout << local_nickname << " has left the chat\n";
+        //write_TCP(ClientFD,{LOGOUT_BYTES},{LOGOUT_KEY});
+        write_TCP(ClientFD,{OK_BYTES},{OK_KEY});
+        clients.erase(local_nickname);
+        if(clients.empty()){
+          working = false;
+          cout << "Everyboyd is gone\n";
+        }
+        close(ClientFD);
+        break;
+      }
+      else if(opt == BROADCAST_KEY){
+        for(const auto& client : clients){
+          write_TCP(client.second,
+            {BROADCAST_RESPONSE_BYTES},
+            {BROADCAST_RESPONSE_KEY,local_nickname,content[1]});
+        }
+      }
+      else if(opt == UNICAST_KEY){
+        if(clients.find(content[2]) == clients.end())
+          write_TCP(clients[local_nickname],
+          {ERROR_BYTES},
+          {ERROR_KEY,"User not found"});
+        else 
+          write_TCP(clients[content[2]],
+          {UNICAST_RESPONSE_BYTES},
+          {UNICAST_RESPONSE_KEY,local_nickname,content[1]});
+      }
+      else if(opt == LIST_KEY){
+        string fileName = "list.json";
+        ofstream outFile(fileName);
+        if (outFile.is_open()) {
+            outFile << "{\n  \"users\": [\n";
+            for (auto it = clients.begin(); it != clients.end(); ++it) {
+                outFile << "    \"" << it->first << "\"";
+                if (std::next(it) != clients.end()) outFile << ",";
+                outFile << "\n";
+            }
+            outFile << "  ]\n}";
+            outFile.close();
+        }
+
+        ifstream inFile(fileName);
+        stringstream buffer;
+        buffer << inFile.rdbuf();
+        string jsonContent = buffer.str();
+        inFile.close();
+
+        write_TCP(ClientFD, {LIST_RESPONSE_BYTES}, {LIST_RESPONSE_KEY, jsonContent});
+      }
+      else if(opt == FILE_KEY) {
+      string targetNick = content[3];
+      
+      if(clients.find(targetNick) != clients.end()){
+          int targetFD = clients[targetNick];
+          write_TCP(targetFD, {FILE_RESPONSE_BYTES}, 
+                    {FILE_RESPONSE_KEY, content[1], content[2], local_nickname});
+      }
+      else{
+          write_TCP(ClientFD, {ERROR_BYTES}, {ERROR_KEY, "User not found"});
       }
     }
-    else if(opt == "U"){
-      if(clients.find(content[2]) == clients.end())
-        write_TCP(clients[local_nickname],{1,5},{"E","User not found\n"});
-      else 
-        write_TCP(clients[content[2]],{1,7,5},{"u",local_nickname,content[1]});
-    }
-    else{
-      write_TCP(clients[local_nickname],{1,5},{"E","My name is Giovanni Giorgio, but everybody calls me Giorgio\n"});
+      else{
+        write_TCP(clients[local_nickname],{ERROR_BYTES},{ERROR_KEY,"My name is Giovanni Giorgio, but everybody calls me Giorgio\n"});
+      }
     }
   }
-}
 
 };
 
