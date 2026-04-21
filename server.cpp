@@ -19,6 +19,7 @@
 #include <sstream>
 #include <iomanip>
 #include <fstream>
+#include <cstdio>
 
 #define LOGIN_BYTES 1,4                   //key,nick
 #define LOGOUT_BYTES 1                    //key
@@ -149,7 +150,7 @@ private:
   }
 
   int read_TCP(const int &FD, vector<int>& headBytes, vector<string>& content){
-    char buffer[1000];
+    char buffer[99999];
     int received = read(FD,buffer,1);
     if(received == -1){
       headBytes = {ERROR_BYTES};
@@ -180,9 +181,10 @@ private:
       headBytes = {LIST_BYTES};    //key
       content = {LIST_KEY};
     }
-    else if(opt == FILE_KEY){    //REVISAR FALTA IMPLENTAR!!!!!!!!!!
-      headBytes = {FILE_BYTES};    //key,msg,nickname
-      content = {FILE_KEY,""};
+    else if(opt == FILE_KEY){    //
+      headBytes = {FILE_BYTES};    //key,file,msg,nickname
+      content = {FILE_KEY,"","",""};
+      return 1;
     }
 
     for(size_t i = 1; i < headBytes.size(); i++){
@@ -256,18 +258,59 @@ private:
 
         write_TCP(ClientFD, {LIST_RESPONSE_BYTES}, {LIST_RESPONSE_KEY, jsonContent});
       }
-      else if(opt == FILE_KEY) {
-      string targetNick = content[3];
-      
-      if(clients.find(targetNick) != clients.end()){
-          int targetFD = clients[targetNick];
-          write_TCP(targetFD, {FILE_RESPONSE_BYTES}, 
-                    {FILE_RESPONSE_KEY, content[1], content[2], local_nickname});
-      }
-      else{
+      else if(opt == FILE_KEY){
+        size_t n = read(ClientFD,buffer,5);
+        buffer[n] = '\0';
+        int fileSize = atoi(buffer);
+
+        for(int i = 0; i < fileSize;){
+          n = read(ClientFD,buffer+i,fileSize-i);
+          i += n; 
+        }
+        buffer[fileSize] = '\0';
+
+        
+        char auxBuffer[256];
+
+        n = read(ClientFD,auxBuffer,5);
+        auxBuffer[n] = '\0';
+        int auxSize = atoi(auxBuffer);
+        n = read(ClientFD,auxBuffer,auxSize);
+        auxBuffer[n] = '\0';
+        content[2] = auxBuffer;
+
+        n = read(ClientFD,auxBuffer,5);
+        auxBuffer[n] = '\0';
+        auxSize = atoi(auxBuffer);
+        n = read(ClientFD,auxBuffer,auxSize);
+        auxBuffer[n] = '\0';
+        content[3] = auxBuffer;
+        
+        if(clients.find(content[3]) == clients.end()){
           write_TCP(ClientFD, {ERROR_BYTES}, {ERROR_KEY, "User not found"});
+          return;
+        }
+
+
+        int TargetFD = clients[content[3]];
+        write_TCP(TargetFD, {1}, 
+                  {FILE_RESPONSE_KEY});
+        
+        ostringstream oss;
+        oss << setfill('0') << setw(5) << content[1].length();
+        string packet = oss.str();
+        write(TargetFD,packet.c_str(),headBytes[1]);
+        
+        for(size_t i = 0; i < fileSize;){
+          i += write(TargetFD,buffer+i,fileSize-i);
+        }
+
+        write_TCP(TargetFD,
+                  {headBytes[2],headBytes[3]},
+                  {content[2],local_nickname});
+
+        
       }
-    }
       else{
         write_TCP(clients[local_nickname],{ERROR_BYTES},{ERROR_KEY,"My name is Giovanni Giorgio, but everybody calls me Giorgio\n"});
       }

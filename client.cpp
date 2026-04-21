@@ -19,6 +19,7 @@
 #include <vector>
 #include <map>
 #include <fstream>
+#include <set>
 
 #define LOGIN_BYTES 1,4                   //key,nick
 #define LOGOUT_BYTES 1                    //key
@@ -122,7 +123,7 @@ public:
   int display_interface(){
     int opt = -1;
     while (true) {
-      cout << "Select an allowed option (1-4):\n";
+      cout << "Select an allowed option (1-5):\n";
       
       if (cin >> opt) {
           if (opt >= 1 && opt <= 5) {
@@ -183,26 +184,58 @@ public:
         break;
 
       case 5://File
-        string fileName, destNick;
+        headBytes = {FILE_BYTES};   //key,file,filename,destnick
+        content.assign(headBytes.size(),"");
+        content[0] = FILE_KEY;
+
+        string fileName;
         cout << "file name(.txt): ";
         cin >> fileName;
+        cin.ignore();
+        content[2] = fileName;
         cout << "nickname: ";
-        cin >> destNick;
+        cin >> content[3];
+
+        //const size_t CHUNK_SIZE = 4096;
+           
 
         ifstream file(fileName, ios::binary);
         if (!file) {
             cout << "ClientError: Couldn't open.\n";
-            break;
+            return 1;  
+        }
+        file.seekg(0,ios::end);
+        size_t fileSize = file.tellg();
+        file.seekg(0,ios::beg);
+        content[1] = to_string(fileSize);
+
+        int maxByteSize = 1;
+        for(int i = 0; i < 5; i++) maxByteSize *= 10;
+        maxByteSize--;
+
+        if(fileSize > maxByteSize){
+          cout << "ClientError: File size is bigger than TCP parameters\n";
+          return 1;
         }
 
-        stringstream buffer;
-        buffer << file.rdbuf();
-        string fileContent = buffer.str();
+        //const int CHUNK_SIZE = 4096;
+        char* buffer = new char[fileSize];
+
+        write_TCP(ClientFD,{headBytes[0]},{content[0]});
+
+        ostringstream oss;
+        oss << setfill('0') << setw(5) << content[1].length();
+        string packet = oss.str();
+        write(ClientFD,packet.c_str(),headBytes[1]);
+        
+        for(size_t i = 0; i < fileSize;){
+          i += write(ClientFD,buffer+i,fileSize-i);
+        }
+
         file.close();
 
-        headBytes = {FILE_BYTES}; // 1, 5, 5, 5
-        content = {FILE_KEY, fileContent, fileName, destNick};
-        write_TCP(ClientFD, headBytes, content);
+        write_TCP(ClientFD,{headBytes[2],headBytes[3]},{content[2],content[3]});
+
         break;
     }
 
@@ -212,6 +245,7 @@ public:
 
 private:
   bool logged;
+  set<string> receivedFiles;
 
   struct sockaddr_in stSockAddr;
   int Res;
@@ -267,7 +301,7 @@ private:
   }
 
   int read_TCP(const int &FD, vector<int>& headBytes, vector<string>& content){
-    char buffer[1000];
+    char buffer[99999];
     int received = read(FD,buffer,1);
     if(received == -1){
       headBytes = {ERROR_BYTES};
@@ -301,6 +335,7 @@ private:
     else if(opt == FILE_RESPONSE_KEY){
       headBytes = {FILE_RESPONSE_BYTES}; // {1, 5, 5, 5}
       content = {FILE_RESPONSE_KEY, "", "", ""};
+      return 1;
     }
     
 
@@ -340,17 +375,36 @@ private:
         cout << "\n[list] " << content[1] << "\n"; 
       }
       else if(opt == FILE_RESPONSE_KEY) {
-        string newFileName = "rec_" + content[2]; 
-        
-        ofstream outFile(newFileName, ios::binary);
-        if (outFile.is_open()) {
-            outFile << content[1];
-            outFile.close();
-            cout << "\n[File] " << content[3] << ": "
-                 << newFileName << ".txt\n";
-        } else {
-            cout << "\n[File] Error al intentar guardar el archivo recibido.\n";
+
+        char buffer[256];
+        int n = read(ClientFD,buffer,5);
+        buffer[n] = '\0';
+        int fileSize = atoi(buffer);
+
+        char auxBuffer[256];
+        n = read(ClientFD,auxBuffer,5);
+        auxBuffer[n] = '\0';
+        int auxSize = atoi(auxBuffer);
+        n = read(ClientFD,auxBuffer,auxSize);
+        auxBuffer[n] = '\0';
+        content[2] = auxBuffer; 
+
+        n = read(ClientFD,auxBuffer,5);
+        auxBuffer[n] = '\0';
+        auxSize = atoi(auxBuffer);
+        n = read(ClientFD,auxBuffer,auxSize);
+        auxBuffer[n] = '\0';
+        content[3] = auxBuffer;
+
+        string newFileName = "rec_" + content[2] + "_" + content[3];
+    
+        ofstream file(newFileName, ios::binary );
+        if (file.is_open()) {
+            file.write(buffer,fileSize);
+            file.close();
+            cout << "\n[File] " << content[3] << ": " << newFileName << "\n";
         }
+        rename(content[2].c_str(),newFileName.c_str());
       }
     }
   }
