@@ -259,57 +259,58 @@ private:
         write_TCP(ClientFD, {LIST_RESPONSE_BYTES}, {LIST_RESPONSE_KEY, jsonContent});
       }
       else if(opt == FILE_KEY){
-        size_t n = read(ClientFD,buffer,5);
-        buffer[n] = '\0';
-        int fileSize = atoi(buffer);
-
-        for(int i = 0; i < fileSize;){
-          n = read(ClientFD,buffer+i,fileSize-i);
-          i += n; 
-        }
-        buffer[fileSize] = '\0';
+        
+        char szBuf[6];
+        read(ClientFD, szBuf, 5);
+        szBuf[5] = '\0';
+        int fileSize = atoi(szBuf);
 
         
-        char auxBuffer[256];
-
-        n = read(ClientFD,auxBuffer,5);
-        auxBuffer[n] = '\0';
-        int auxSize = atoi(auxBuffer);
-        n = read(ClientFD,auxBuffer,auxSize);
-        auxBuffer[n] = '\0';
-        content[2] = auxBuffer;
-
-        n = read(ClientFD,auxBuffer,5);
-        auxBuffer[n] = '\0';
-        auxSize = atoi(auxBuffer);
-        n = read(ClientFD,auxBuffer,auxSize);
-        auxBuffer[n] = '\0';
-        content[3] = auxBuffer;
-        
-        if(clients.find(content[3]) == clients.end()){
-          write_TCP(ClientFD, {ERROR_BYTES}, {ERROR_KEY, "User not found"});
-          return;
+        vector<char> fileData(fileSize);
+        int downloaded = 0;
+        while(downloaded < fileSize){
+            int r = read(ClientFD, fileData.data() + downloaded, fileSize - downloaded);
+            if(r <= 0) break;
+            downloaded += r;
         }
 
+        
+        char lenBuf[6];
+        read(ClientFD, lenBuf, 5); lenBuf[5] = '\0';
+        int fileNameLen = atoi(lenBuf);
+        vector<char> nameBuf(fileNameLen + 1, 0);
+        read(ClientFD, nameBuf.data(), fileNameLen);
+        string fileName(nameBuf.data());
 
-        int TargetFD = clients[content[3]];
-        write_TCP(TargetFD, {1}, 
-                  {FILE_RESPONSE_KEY});
         
-        ostringstream oss;
-        oss << setfill('0') << setw(5) << content[1].length();
-        string packet = oss.str();
-        write(TargetFD,packet.c_str(),headBytes[1]);
+        read(ClientFD, lenBuf, 5); lenBuf[5] = '\0';
+        int nickLen = atoi(lenBuf);
+        vector<char> nickBuf(nickLen + 1, 0);
+        read(ClientFD, nickBuf.data(), nickLen);
+        string destNick(nickBuf.data());
         
-        for(size_t i = 0; i < fileSize;){
-          i += write(TargetFD,buffer+i,fileSize-i);
+        
+        if(clients.count(destNick)){
+            int TargetFD = clients[destNick];
+            
+            write(TargetFD, FILE_RESPONSE_KEY, 1);
+            
+            
+            ostringstream oss;
+            oss << setfill('0') << setw(5) << fileSize;
+            write(TargetFD, oss.str().c_str(), 5);
+            
+            
+            write(TargetFD, fileData.data(), fileSize);
+            
+            
+            oss.str(""); oss.clear();
+            oss << setfill('0') << setw(5) << fileName.length() << fileName;
+            
+            oss << setfill('0') << setw(5) << local_nickname.length() << local_nickname;
+            
+            write(TargetFD, oss.str().data(), oss.str().size());
         }
-
-        write_TCP(TargetFD,
-                  {headBytes[2],headBytes[3]},
-                  {content[2],local_nickname});
-
-        
       }
       else{
         write_TCP(clients[local_nickname],{ERROR_BYTES},{ERROR_KEY,"My name is Giovanni Giorgio, but everybody calls me Giorgio\n"});
