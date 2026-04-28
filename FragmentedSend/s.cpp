@@ -6,16 +6,23 @@
 #include <sys/socket.h>
 #include <signal.h>
 
+#include <string>
+
+using namespace std;
+
 #define PORT 8080
 #define BUFFER_SIZE 8   // pequeño para forzar fragmentación
 
 void handle_client(int client_socket) {
     char buffer[BUFFER_SIZE];
     std::string acumulador;
+    int size = 0;
+    int msg_size = 0;
+    bool working = false;
 
     while (true) {
         ssize_t bytes = recv(client_socket, buffer, BUFFER_SIZE, 0);
-
+        /*
         if (bytes > 0) {
             // Simular latencia
             usleep(200000);
@@ -43,6 +50,57 @@ void handle_client(int client_socket) {
                     std::cerr << "Error en send: " << strerror(errno) << std::endl;
                     return;
                 }
+            }
+        }
+        */
+       if (bytes > 0) {
+            // Simular latencia
+            usleep(200000);
+
+            std::string fragmento(buffer, bytes);
+            std::cout << "[Fragmento]: " << fragmento << std::endl;
+
+            acumulador += fragmento;
+
+            if(!working && acumulador.size() >= 5){
+                string tmp = acumulador.substr(0,5);
+                msg_size = stoi(tmp.c_str());
+                working = true;
+                size = msg_size + 5 + 1;
+                continue;
+            }
+
+            //size -= fragmento.size();
+            size_t pos;
+            if (working && acumulador.size() >= (size_t)size) {
+                std::string mensaje = acumulador; //= acumulador.substr(0, pos);
+                //acumulador.erase(0, pos + 1);
+
+                std::cout << "[Mensaje completo]: " << mensaje << std::endl;
+                pos = 0;
+                if(mensaje[5] == 'J' && mensaje[6] == '{' && mensaje[size-1] == '}'){
+                    cout << "Correctamente recibido\n";
+                    //break;
+                }
+                else{
+                    cout << "Incorrectamente recibido\n";
+                    //break;
+                }
+
+                std::string respuesta = "ACK: " + mensaje + "\n";
+
+                ssize_t sent = send(client_socket,
+                                    respuesta.c_str(),
+                                    respuesta.size(),
+                                    MSG_NOSIGNAL); // evita SIGPIPE
+
+                if (sent < 0) {
+                    std::cerr << "Error en send: " << strerror(errno) << std::endl;
+                    return;
+                }
+                acumulador.erase(0, size);
+                working = false;
+                size = 0;
             }
         }
         else if (bytes == 0) {

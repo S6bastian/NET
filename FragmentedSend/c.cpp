@@ -3,7 +3,17 @@
 #include <arpa/inet.h>
 #include <cstring>
 
+#include <string>
+
 #define PORT 8080
+
+using namespace std;
+
+void fill(int size, string& msg){
+    if(msg.size() > size) return;
+    string tmp(size-msg.size(),'0');
+    msg = tmp + msg;
+}
 
 void send_fragmented(int sock, const std::string& msg) {
     for (size_t i = 0; i < msg.size(); i += 3) {
@@ -15,6 +25,14 @@ void send_fragmented(int sock, const std::string& msg) {
 
         usleep(100000); // 100 ms (latencia artificial)
     }
+}
+
+void send_JSON(int sock, const string& msg){
+    //size_t size = msg.size();
+    string protocol_msg = to_string(msg.size());
+    fill(5,protocol_msg);
+    protocol_msg += "J" + msg;
+    send_fragmented(sock,protocol_msg);
 }
 
 int main() {
@@ -33,8 +51,10 @@ int main() {
     std::cout << "Conectado al servidor\n";
 
     // Enviar mensajes fragmentados
-    send_fragmented(sock, "Hola servidor\n");
-    send_fragmented(sock, "Este es otro mensaje largo\n");
+    //send_fragmented(sock, "Hola servidor\n");
+    //send_fragmented(sock, "Este es otro mensaje largo\n");
+    string jsonString = "{Este es otro mensaje largo 123456789}";
+    send_JSON(sock,jsonString);
 
     sleep(1);
 
