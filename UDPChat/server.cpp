@@ -1,322 +1,556 @@
-/* Server code in C++ */
+// g++ server.cpp -o server -pthread
+// g++ client.cpp -o client
 
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+
+/*
+
+c++ program that uses a UDP socket.
+-----------------------------------
+The server should support multiple clients and use Threads.
+The application is a chat.
+The datagram is fixed to 500 Bytes.
+The datagram has 3 encapsulations.
+
+Encapsulation 1
+---------------
+size: 1 Byte,  for the action.
+size: 3 Bytes,  for nick_name size.
+size: variable size based on the nick_name length.
+size: 3 Bytes,  for the nick_name size for the destination client.
+size: variable size based on the nick_name destination length.
+size: 5 Bytes,  for message.
+size: variable size based on the message  length.
+size: 11 Bytes,  for file name.
+size: variable size based on the file name  length.
+size: 20 Bytes for the actual file.
+size: variable size based on actual  file  length.
+
+Actions
+-------
+There are 3 actions:
+M: message to a particular client.
+B: message to all clients as a broadcast
+F: send to be sent instead of a message.
+
+Encapsulation 2
+---------------
+We have two cases:
+1. If the datagram from encapsulation 1 is less than 494 Bytes, pad it with # to reach 496 Bytes.
+2. If the datagram from encapsulation 2 exceeds 494 Bytes, the message should be split into 496 Bytes, and each split chunk should be encapsulated with encapsulation 3.
+
+Encapsulation 3
+--------------
+All messages should be encapsulated.
+This encapsulation adds 2 fields.
+2 bytes to indicate if it is the first chunk in a set of n, with the value 01. If it is the last chunk in a set of n, with the value of 11. other way 00
+4 bytes to indicate the sequence number of chunks in the stream of chunks. The sequence number corresponds to the chunk from the encapsulation 2.
+
+If the chunk is the one on the stream of chunks,  the first 2 bytes will be set to 11 and the sequence number to 0000.
+If the last datagram is less than 494, pad it with @
+All datagrams to be sent over the socket should be 500 Bytes.
+
+*/
+
 
 #include <iostream>
-#include <cstring>
-#include <cstdlib>
-#include <string>
-#include <map>
 #include <thread>
+#include <mutex>
+#include <map>
 #include <vector>
-#include <sstream>
-#include <iomanip>
-#include <fstream>
-#include <cstdio>
-
-#define LOGIN_BYTES 1,4                   //key,nick
-#define LOGOUT_BYTES 1                    //key
-#define BROADCAST_BYTES 1,7               //key,msg
-#define BROADCAST_RESPONSE_BYTES 1,3,7    //key,nick,msg
-#define UNICAST_BYTES 1,5,7               //key,msg,nick
-#define UNICAST_RESPONSE_BYTES 1,7,5      //key,nick,msg
-#define LIST_BYTES 1                      //key
-#define LIST_RESPONSE_BYTES 1,5           //key,size
-#define FILE_BYTES 1,5,5,5                //key,file,filename,destnick
-#define FILE_RESPONSE_BYTES 1,5,5,5       //key,file,filename,sourcenick         
-#define OK_BYTES 1                        //key
-#define ERROR_BYTES 1,5                   //key,msg
-
-#define LOGIN_KEY "L"
-#define LOGOUT_KEY "O"
-#define BROADCAST_KEY "B"
-#define BROADCAST_RESPONSE_KEY "b"
-#define UNICAST_KEY "U"
-#define UNICAST_RESPONSE_KEY "u"
-#define LIST_KEY "T"
-#define LIST_RESPONSE_KEY "t"
-#define FILE_KEY "F"
-#define FILE_RESPONSE_KEY "f"
-#define OK_KEY "K"
-#define ERROR_KEY "E"
+#include <cstring>
+#include <algorithm>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 using namespace std;
 
-class ServerTCP{
-public:
-  ServerTCP(){
-    cout << "Inititalizing server\n\n\n";
-    ServerFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+constexpr int PORT = 45000;
+constexpr int DATAGRAM_SIZE = 500;
+constexpr int HEADER_SIZE = 6;
+constexpr int PAYLOAD_SIZE = 494;
 
-    if(-1 == ServerFD)
-    {
-      perror("can not create socket");
-      exit(EXIT_FAILURE);
-    }
+struct ClientInfo {
+    sockaddr_in address;
+};
 
-    memset(&stSockAddr, 0, sizeof(struct sockaddr_in));
+struct FragmentData {
+    int sequence;
+    string payload;
+};
 
-    stSockAddr.sin_family = AF_INET;
-    stSockAddr.sin_port = htons(45000);
-    stSockAddr.sin_addr.s_addr = INADDR_ANY;
+struct ServerUDP{
+    mutex clients_mutex;
+    mutex fragments_mutex;
+    map<string, ClientInfo> clients;
+    map<string, vector<FragmentData>> fragment_buffer;
 
-    if(-1 == bind(ServerFD,(const struct sockaddr *)&stSockAddr, sizeof(struct sockaddr_in)))
-    {
-      perror("error bind failed");
-      close(ServerFD);
-      exit(EXIT_FAILURE);
-    }
+    int socket_fd;
+    sockaddr_in serverAddr;
 
-    if(-1 == listen(ServerFD, 10))
-    {
-      perror("error listen failed");
-      close(ServerFD);
-      exit(EXIT_FAILURE);
-    }
-    cout  << "*******************************************************\n"
-          << "*******************ServerTCP Listening*****************\n"
-          << "*******************************************************\n\n";
-  }
-  
-  ~ServerTCP(){
-    shutdown(ServerFD, SHUT_RDWR);
-    close(ServerFD);
-    cout  << "*********************Disconnected**********************\n";
-  }
+    ServerUDP(){
+        socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
 
-  int listening(){
-    int ClientFD = accept(ServerFD, NULL, NULL);
-    int received;
-    if(!working) return 0;
-    
-    if(ClientFD > 0){
-      vector<int> headBytes;
-      vector<string> content;
-      received = read_TCP(ClientFD,headBytes,content);
-      
+        serverAddr.sin_family = AF_INET;
+        serverAddr.sin_port = htons(PORT);
+        serverAddr.sin_addr.s_addr = INADDR_ANY;
 
-      if(content[0] == LOGIN_KEY && clients.find(content[1]) == clients.end()){
-        cout << "---> " << content[1] << " joined\n"; 
-        clients[content[1]] = ClientFD;
-        write_TCP(ClientFD,{OK_BYTES},{OK_KEY});
-        thread t(&ServerTCP::threadReadSocket,this,ClientFD,content[1]);
-        t.detach();
-      }
-      else{
-        write_TCP(ClientFD,{ERROR_BYTES},{ERROR_KEY,"Rejected"});
-        close(ClientFD);
-      }
-      
-    }
-    return 1;
-  }
-
-
-private:
-  map<string,int> clients;
-  bool working = true;
-
-  struct sockaddr_in stSockAddr;
-  int ServerFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-  char buffer[256];
-
-
-  int write_TCP(const int &FD, const vector<int>& headBytes, const vector<string>& content){
-      ostringstream oss;
-
-      oss << setw(headBytes[0]) << content[0];
-      
-      for(size_t i = 1; i < headBytes.size(); i++){
-        oss << setfill('0') << setw(headBytes[i]) << content[i].length()
-          << content[i];
-      }
-      
-      string packet = oss.str();
-
-      int total_sent = write(FD, packet.data(), (int)packet.size());
-
-      if (total_sent == -1){
-          return -1;
-      }
-
-      return total_sent;
-  }
-
-  int read_TCP(const int &FD, vector<int>& headBytes, vector<string>& content){
-    char buffer[99999];
-    int received = read(FD,buffer,1);
-    if(received == -1){
-      headBytes = {ERROR_BYTES};
-      content = {ERROR_KEY,"server could not read the message"};
-      return -1;
-    }
-    
-    buffer[received] = '\0';
-    string opt = buffer;
-    
-    if(opt == LOGIN_KEY){
-      headBytes = {LOGIN_BYTES};    //key,nickname
-      content = {LOGIN_KEY,""};
-    }
-    else if(opt == LOGOUT_KEY){
-      headBytes = {LOGOUT_BYTES};      //key
-      content = {LOGOUT_KEY};
-    }
-    else if(opt == BROADCAST_KEY){
-      headBytes = {BROADCAST_BYTES};    //key,msg
-      content = {BROADCAST_KEY,""};
-    }
-    else if(opt == UNICAST_KEY){
-      headBytes = {UNICAST_BYTES};    //key,msg,nickname
-      content = {UNICAST_KEY,"",""};
-    }
-    else if(opt == LIST_KEY){
-      headBytes = {LIST_BYTES};    //key
-      content = {LIST_KEY};
-    }
-    else if(opt == FILE_KEY){    //
-      headBytes = {FILE_BYTES};    //key,file,msg,nickname
-      content = {FILE_KEY,"","",""};
-      return 1;
-    }
-
-    for(size_t i = 1; i < headBytes.size(); i++){
-      received = read(FD,buffer,headBytes[i]);
-      buffer[received] = '\0';
-      int msgSz = atoi(buffer);
-      received = read(FD,buffer,msgSz);
-      buffer[received] = '\0';
-      string data = buffer;
-      content[i] = data;
-    }
-    return received;
-  }
-  
-  void threadReadSocket(int ClientFD,string local_nickname){
-    vector<int> headBytes;
-    vector<string> content;
-    int received;
-    while(true){
-      received = read_TCP(ClientFD,headBytes,content);
-      
-      string opt = content[0];
-      if(opt == LOGOUT_KEY){
-        cout << local_nickname << " has left the chat\n";
-        //write_TCP(ClientFD,{LOGOUT_BYTES},{LOGOUT_KEY});
-        write_TCP(ClientFD,{OK_BYTES},{OK_KEY});
-        clients.erase(local_nickname);
-        if(clients.empty()){
-          working = false;
-          cout << "Everyboyd is gone\n";
+        if (bind(
+                socket_fd,
+                (sockaddr *)&serverAddr,
+                sizeof(serverAddr)
+        ) < 0){
+            cerr << "Bind failed.\n";
+            exit(EXIT_FAILURE);
         }
-        close(ClientFD);
-        break;
-      }
-      else if(opt == BROADCAST_KEY){
-        for(const auto& client : clients){
-          write_TCP(client.second,
-            {BROADCAST_RESPONSE_BYTES},
-            {BROADCAST_RESPONSE_KEY,local_nickname,content[1]});
-        }
-      }
-      else if(opt == UNICAST_KEY){
-        if(clients.find(content[2]) == clients.end())
-          write_TCP(clients[local_nickname],
-          {ERROR_BYTES},
-          {ERROR_KEY,"User not found"});
-        else 
-          write_TCP(clients[content[2]],
-          {UNICAST_RESPONSE_BYTES},
-          {UNICAST_RESPONSE_KEY,local_nickname,content[1]});
-      }
-      else if(opt == LIST_KEY){
-        string fileName = "list.json";
-        ofstream outFile(fileName);
-        if (outFile.is_open()) {
-            outFile << "{\n  \"users\": [\n";
-            for (auto it = clients.begin(); it != clients.end(); ++it) {
-                outFile << "    \"" << it->first << "\"";
-                if (std::next(it) != clients.end()) outFile << ",";
-                outFile << "\n";
+    }
+
+    ~ServerUDP(){
+        close(socket_fd);
+    }
+
+    void run(){
+        cout << "UDP CHAT SERVER RUNNING\n";
+
+        while (true) {
+
+            char buffer[DATAGRAM_SIZE];
+
+            sockaddr_in client_addr{};
+            socklen_t len = sizeof(client_addr);
+
+            int received =
+                recvfrom(
+                    socket_fd,
+                    buffer,
+                    DATAGRAM_SIZE,
+                    0,
+                    (sockaddr *)&client_addr,
+                    &len
+                );
+            cout << "READ:>>>" << buffer << "<<<" << "\n";
+            if (received <= 0)
+                continue;
+
+            string flag(buffer, 2);
+
+            string seqStr(buffer + 2, 4);
+
+            int sequence = stoi(seqStr);
+
+            string payload(buffer + HEADER_SIZE, PAYLOAD_SIZE);
+
+            string client_key = build_client_key(client_addr);
+
+            // SINGLE FRAGMENT MESSAGE
+            if (flag == "11" && sequence == 0) {
+
+                payload = trim_right(payload, '#');
+
+                thread t(
+                    &ServerUDP::receive_thread, this,
+                    socket_fd,
+                    payload,
+                    client_addr
+                );
+
+                t.detach();
+
+                continue;
             }
-            outFile << "  ]\n}";
-            outFile.close();
+
+            lock_guard<mutex> lock(fragments_mutex);
+
+            // FIRST FRAGMENT
+            if (flag == "01") {
+
+                fragment_buffer[client_key].clear();
+
+                fragment_buffer[client_key].push_back({sequence, payload});
+            }
+
+            // MIDDLE FRAGMENT
+            else if (flag == "00") {
+
+                fragment_buffer[client_key].push_back({sequence, payload});
+            }
+
+            // LAST FRAGMENT
+            else if (flag == "11") {
+
+                payload = trim_right(payload, '@');
+
+                fragment_buffer[client_key].push_back({sequence, payload});
+
+                auto &fragments = fragment_buffer[client_key];
+
+                sort(
+                    fragments.begin(),
+                    fragments.end(),
+                    [](const FragmentData &a,
+                       const FragmentData &b) {
+
+                        return a.sequence < b.sequence;
+                    }
+                );
+
+                string full_data;
+
+                for (auto &f : fragments)
+                    full_data += f.payload;
+
+                thread t(
+                    &ServerUDP::receive_thread,this,
+                    socket_fd,
+                    full_data,
+                    client_addr
+                );
+
+                t.detach();
+
+                fragment_buffer[client_key].clear();
+            }
         }
-
-        ifstream inFile(fileName);
-        stringstream buffer;
-        buffer << inFile.rdbuf();
-        string jsonContent = buffer.str();
-        inFile.close();
-
-        write_TCP(ClientFD, {LIST_RESPONSE_BYTES}, {LIST_RESPONSE_KEY, jsonContent});
-      }
-      else if(opt == FILE_KEY){
-        
-        char szBuf[6];
-        read(ClientFD, szBuf, 5);
-        szBuf[5] = '\0';
-        int fileSize = atoi(szBuf);
-
-        
-        vector<char> fileData(fileSize);
-        int downloaded = 0;
-        while(downloaded < fileSize){
-            int r = read(ClientFD, fileData.data() + downloaded, fileSize - downloaded);
-            if(r <= 0) break;
-            downloaded += r;
-        }
-
-        
-        char lenBuf[6];
-        read(ClientFD, lenBuf, 5); lenBuf[5] = '\0';
-        int fileNameLen = atoi(lenBuf);
-        vector<char> nameBuf(fileNameLen + 1, 0);
-        read(ClientFD, nameBuf.data(), fileNameLen);
-        string fileName(nameBuf.data());
-
-        
-        read(ClientFD, lenBuf, 5); lenBuf[5] = '\0';
-        int nickLen = atoi(lenBuf);
-        vector<char> nickBuf(nickLen + 1, 0);
-        read(ClientFD, nickBuf.data(), nickLen);
-        string destNick(nickBuf.data());
-        
-        
-        if(clients.count(destNick)){
-            int TargetFD = clients[destNick];
-            
-            write(TargetFD, FILE_RESPONSE_KEY, 1);
-            
-            
-            ostringstream oss;
-            oss << setfill('0') << setw(5) << fileSize;
-            write(TargetFD, oss.str().c_str(), 5);
-            
-            
-            write(TargetFD, fileData.data(), fileSize);
-            
-            
-            oss.str(""); oss.clear();
-            oss << setfill('0') << setw(5) << fileName.length() << fileName;
-            
-            oss << setfill('0') << setw(5) << local_nickname.length() << local_nickname;
-            
-            write(TargetFD, oss.str().data(), oss.str().size());
-        }
-      }
-      else{
-        write_TCP(clients[local_nickname],{ERROR_BYTES},{ERROR_KEY,"My name is Giovanni Giorgio, but everybody calls me Giorgio\n"});
-      }
     }
-  }
+
+    void print_connected_clients() {
+
+        lock_guard<mutex> lock(clients_mutex);
+
+        cout << "\n========== CONNECTED CLIENTS ==========\n";
+
+        if (clients.empty()) {
+
+            cout << "No connected clients.\n";
+        }
+        else {
+
+            int count = 1;
+
+            for (const auto &client : clients) {
+
+                string nick_name = client.first;
+
+                sockaddr_in addr = client.second.address;
+
+                cout << count++ << ". ";
+
+                cout << "Nickname: "
+                     << nick_name
+                     << " | IP: "
+                     << inet_ntoa(addr.sin_addr)
+                     << " | Port: "
+                     << ntohs(addr.sin_port)
+                     << "\n";
+            }
+        }
+
+        cout << "=======================================\n";
+    }
+
+    string pad_number(int number, int width) {
+
+        string s = to_string(number);
+
+        while (s.size() < width)
+            s = "0" + s;
+
+        return s;
+    }
+
+    string trim_right(const string &s, char c) {
+
+        size_t end = s.find_last_not_of(c);
+
+        if (end == string::npos)
+            return "";
+
+        return s.substr(0, end + 1);
+    }
+
+    string build_client_key(sockaddr_in addr) {
+
+        return string(inet_ntoa(addr.sin_addr))
+               + ":"
+               + to_string(ntohs(addr.sin_port));
+    }
+
+    void send_datagram(
+        int socket_fd,
+        sockaddr_in addr,
+        const string &flag,
+        int sequence,
+        const string &payload
+    ) {
+
+        char datagram[DATAGRAM_SIZE];
+
+        memset(datagram, 0, DATAGRAM_SIZE);
+
+        memcpy(datagram, flag.c_str(), 2);
+
+        string seq = pad_number(sequence, 4);
+
+        memcpy(datagram + 2, seq.c_str(), 4);
+
+        memcpy(datagram + HEADER_SIZE,
+               payload.c_str(),
+               payload.size());
+
+        cout << "WRITE:>>>" << datagram << "<<<" << "\n";
+        sendto(
+            socket_fd,
+            datagram,
+            DATAGRAM_SIZE,
+            0,
+            (sockaddr *)&addr,
+            sizeof(addr)
+        );
+    }
+
+    vector<string> split_payload(const string &data) {
+
+        vector<string> chunks;
+
+        int offset = 0;
+
+        while (offset < data.size()) {
+
+            int chunk_size =
+                min(PAYLOAD_SIZE, (int)data.size() - offset);
+
+            chunks.push_back(
+                data.substr(offset, chunk_size)
+            );
+
+            offset += chunk_size;
+        }
+
+        return chunks;
+    }
+
+    void send_message(
+        int socket_fd,
+        sockaddr_in addr,
+        const string &data
+    ) {
+
+        // SINGLE DATAGRAM CASE
+        if (data.size() <= PAYLOAD_SIZE) {
+
+            string payload = data;
+
+            payload.append(PAYLOAD_SIZE - payload.size(), '#');
+
+            send_datagram(
+                socket_fd,
+                addr,
+                "11",
+                0,
+                payload
+            );
+
+            return;
+        }
+
+        // MULTI FRAGMENT CASE
+        vector<string> chunks = split_payload(data);
+
+        for (int i = 0; i < chunks.size(); i++) {
+
+            string flag = "00";
+
+            if (i == 0)
+                flag = "01";
+
+            else if (i == chunks.size() - 1)
+                flag = "11";
+
+            string payload = chunks[i];
+
+            if (i == chunks.size() - 1 &&
+                payload.size() < PAYLOAD_SIZE) {
+
+                payload.append(
+                    PAYLOAD_SIZE - payload.size(),
+                    '@'
+                );
+            }
+
+            send_datagram(
+                socket_fd,
+                addr,
+                flag,
+                i,
+                payload
+            );
+        }
+    }
+
+    string build_protocol(
+        char action,
+        const string &nick_name,
+        const string &destination,
+        const string &message,
+        const string &file_name,
+        const string &file_data
+    ) {
+
+        string protocol;
+
+        protocol += action;
+
+        protocol += pad_number(nick_name.size(), 3);
+        protocol += nick_name;
+
+        protocol += pad_number(destination.size(), 3);
+        protocol += destination;
+
+        protocol += pad_number(message.size(), 5);
+        protocol += message;
+
+        protocol += pad_number(file_name.size(), 11);
+        protocol += file_name;
+
+        protocol += pad_number(file_data.size(), 20);
+        protocol += file_data;
+
+        return protocol;
+    }
+
+    void parse_protocol(
+        const string &data,
+        char &action,
+        string &nick_name,
+        string &destination,
+        string &message,
+        string &file_name,
+        string &file_data
+    ) {
+
+        int idx = 0;
+
+        action = data[idx++];
+
+        int nick_size = stoi(data.substr(idx, 3));
+        idx += 3;
+
+        nick_name = data.substr(idx, nick_size);
+        idx += nick_size;
+
+        int destSize = stoi(data.substr(idx, 3));
+        idx += 3;
+
+        destination = data.substr(idx, destSize);
+        idx += destSize;
+
+        int msgSize = stoi(data.substr(idx, 5));
+        idx += 5;
+
+        message = data.substr(idx, msgSize);
+        idx += msgSize;
+
+        int fileNameSize = stoi(data.substr(idx, 11));
+        idx += 11;
+
+        file_name = data.substr(idx, fileNameSize);
+        idx += fileNameSize;
+
+        int fileSize = stoi(data.substr(idx, 20));
+        idx += 20;
+
+        file_data = data.substr(idx, fileSize);
+    }
+
+    void process_message(
+        int socket_fd,
+        const string &full_data,
+        sockaddr_in sender_addr
+    ) {
+
+        char action;
+        string nick_name;
+        string destination;
+        string message;
+        string file_name;
+        string file_data;
+
+        parse_protocol(
+            full_data,
+            action,
+            nick_name,
+            destination,
+            message,
+            file_name,
+            file_data
+        );
+
+        {
+            lock_guard<mutex> lock(clients_mutex);
+
+            clients[nick_name] = {sender_addr};
+        }
+
+        // Print all connected clients
+        print_connected_clients();
+
+        cout << "\n========== MESSAGE ==========\n";
+
+        cout << "FROM: " << nick_name << "\n";
+        cout << "ACTION: " << action << "\n";
+
+        if (action == 'M' || action == 'B')
+            cout << "TEXT: " << message << "\n";
+
+        if (action == 'F') {
+            cout << "FILE: " << file_name << "\n";
+            cout << "FILE SIZE: "
+                 << file_data.size()
+                 << "\n";
+        }
+
+        cout << "=============================\n";
+
+        if (action == 'B') {
+
+            lock_guard<mutex> lock(clients_mutex);
+
+            for (auto &c : clients) {
+
+                if (c.first == nick_name)
+                    continue;
+
+                send_message(
+                    socket_fd,
+                    c.second.address,
+                    full_data
+                );
+            }
+        }
+
+        else if (action == 'M' || action == 'F') {
+
+            lock_guard<mutex> lock(clients_mutex);
+
+            if (clients.count(destination)) {
+
+                send_message(
+                    socket_fd,
+                    clients[destination].address,
+                    full_data
+                );
+            }
+        }
+    }
+
+    void receive_thread(
+        int socket_fd,
+        string full_data,
+        sockaddr_in client_addr
+    ) {
+
+        process_message(socket_fd, full_data, client_addr);
+    }
+
 
 };
 
@@ -324,15 +558,11 @@ private:
 
 
 
+int main() {
+    ServerUDP server;
 
-int main(void)
-{
-  ServerTCP server;
+    server.run();
 
-  while(server.listening());
 
-  return 0;
+    return 0;
 }
-
-
-// para matar el puerto     sudo fuser -k 45000/tcp
