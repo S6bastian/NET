@@ -50,6 +50,7 @@ All datagrams to be sent over the socket should be 500 Bytes.
 
 */
 
+#include <cstddef>
 #include <iostream>
 #include <fstream>
 #include <thread>
@@ -66,8 +67,19 @@ using namespace std;
 constexpr int PORT = 45000;
 
 constexpr int DATAGRAM_SIZE = 500;
-constexpr int HEADER_SIZE = 6;
-constexpr int PAYLOAD_SIZE = 494;
+constexpr int HASH_SIZE = 1;
+constexpr int FLAG_SIZE = 2;
+constexpr int SEQUENCE_SIZE = 4;
+constexpr int HEADER_SIZE = HASH_SIZE + FLAG_SIZE + SEQUENCE_SIZE;
+constexpr int PAYLOAD_SIZE = DATAGRAM_SIZE - HEADER_SIZE;
+
+constexpr int ACTION_SIZE = 1;
+constexpr int NICK_NAME_SIZE = 3;
+constexpr int DESTINY_NICK_NAME_SIZE = 3;
+constexpr int MESSAGE_SIZE = 5;
+constexpr int FILE_NAME_SIZE = 11;
+constexpr int FILE_SIZE_SIZE = 20;
+
 
 struct FragmentData {
     int sequence;
@@ -77,10 +89,15 @@ struct FragmentData {
 struct ClientUDP{
     mutex fragmentsMutex;
     map<string, vector<FragmentData>> fragmentBuffer;
+    string nick_name;
+    int socket_fd;
+    sockaddr_in clientAddr;
+    sockaddr_in server_addr;
+    bool debug = true;
 
 
     ClientUDP(){
-        int socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+        socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
 
         if (socket_fd < 0) {
             cerr << "Socket creation failed.\n";
@@ -88,7 +105,6 @@ struct ClientUDP{
         }
 
         // BIND CLIENT SOCKET
-        sockaddr_in clientAddr{};
 
         clientAddr.sin_family = AF_INET;
         clientAddr.sin_addr.s_addr = INADDR_ANY;
@@ -104,15 +120,15 @@ struct ClientUDP{
             exit(EXIT_FAILURE);
         }
 
-        sockaddr_in serverAddr{};
 
-        serverAddr.sin_family = AF_INET;
-        serverAddr.sin_port = htons(PORT);
+
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(PORT);
 
         inet_pton(
             AF_INET,
             "127.0.0.1",
-            &serverAddr.sin_addr
+            &server_addr.sin_addr
         );
 
         // START RECEIVER THREAD
@@ -124,8 +140,116 @@ struct ClientUDP{
         receiverThread.detach();
     }
 
+    void run(){
+        cout << "Enter nick_name: ";
+        getline(cin, nick_name);
 
-    string padNumber(int number, int width) {
+        while (true) {
+
+            char action;
+
+            cout << "\n=========================\n";
+            cout << "[M] Private Message\n";
+            cout << "[B] Broadcast\n";
+            cout << "[F] Send File\n";
+            cout << "[L] List\n";
+            cout << "[O] Logout\n";
+            cout << "Choice: ";
+
+            cin >> action;
+
+            cin.ignore();
+
+            string destination;
+            string message;
+            string file_name;
+            string file_data;
+
+            // DESTINATION
+            if (action == 'M' ||
+                action == 'F') {
+
+                cout << "Destination: ";
+
+                getline(cin, destination);
+            }
+
+            // MESSAGE
+            if (action == 'M' || action == 'B') {
+
+                cout << "Message: ";
+
+                getline(cin, message);
+            }
+
+            // FILE
+            if (action == 'F') {
+
+                cout << "file_name: ";
+
+                getline(cin, file_name);
+
+                file_data = read_file(file_name);
+
+                if (file_data.empty()) {
+
+                    cout << "Cannot read file.\n";
+
+                    continue;
+                }
+            }
+
+            if (action == 'O') {
+                string protocol = build_protocol('O', nick_name, "", "", "", "");
+                send_message(socket_fd, server_addr, protocol);
+                cout << "Logged out.\n";
+                close(socket_fd);
+                return;
+            }
+
+            if (action == 'L') {
+                string protocol = build_protocol('L', nick_name, "", "", "", "");
+                send_message(socket_fd, server_addr, protocol);
+                cout << "List requested.\n";
+                continue;
+            }
+
+            // BUILD PROTOCOL
+            string protocol =
+                build_protocol(
+                    action,
+                    nick_name,
+                    destination,
+                    message,
+                    file_name,
+                    file_data
+                );
+
+
+            // SEND
+            send_message(
+                socket_fd,
+                server_addr,
+                protocol
+            );
+
+            cout << "Data sent successfully.\n";
+        }
+
+    }
+
+    int checksum(const string& data){
+        int sum = 0;
+
+        for(size_t i = 0; i < data.size(); i++)
+            sum += (unsigned char)data[i];
+
+        sum %= 7;
+        return sum;
+    }
+
+
+    string pad_number(int number, int width) {
 
         string s = to_string(number);
 
@@ -135,7 +259,7 @@ struct ClientUDP{
         return s;
     }
 
-    string trimRight(const string &s, char c) {
+    string trim_right(const string &s, char c) {
 
         size_t end = s.find_last_not_of(c);
 
@@ -145,7 +269,7 @@ struct ClientUDP{
         return s.substr(0, end + 1);
     }
 
-    string readFile(const string &file_name) {
+    string read_file(const string &file_name) {
 
         ifstream file(file_name, ios::binary);
 
@@ -160,43 +284,47 @@ struct ClientUDP{
 
     void send_datagram(
         int socket_fd,
-        sockaddr_in serverAddr,
-        const string &flag,
+        sockaddr_in server_addr,
+        const char& hash,
+        const string& flag,
         int sequence,
         const string &payload
     ) {
 
-        char datagram[DATAGRAM_SIZE];
+        char datagram[DATAGRAM_SIZE+1];
+        datagram[DATAGRAM_SIZE] = '\0';
 
         memset(datagram, 0, DATAGRAM_SIZE);
 
+        int idx = 0;
+
+        // 1 BYTE HASH
+        datagram[idx] = hash;
+        idx += HASH_SIZE;
+
         // 2 BYTES FLAG
-        memcpy(datagram,
-               flag.c_str(),
-               2);
+        memcpy(datagram + idx, flag.c_str(), FLAG_SIZE);
+        idx += FLAG_SIZE;
 
         // 4 BYTES SEQUENCE NUMBER
-        string seq =
-            padNumber(sequence, 4);
+        string seq = pad_number(sequence, SEQUENCE_SIZE);
 
-        memcpy(datagram + 2,
-               seq.c_str(),
-               4);
+        memcpy(datagram + idx, seq.c_str(), SEQUENCE_SIZE);
+        idx += SEQUENCE_SIZE;
 
-        // 494 BYTES PAYLOAD
-        memcpy(datagram + HEADER_SIZE,
-               payload.c_str(),
-               payload.size());
+        // 493 BYTES PAYLOAD
+        memcpy(datagram + idx, payload.c_str(), payload.size());
 
         sendto(
             socket_fd,
             datagram,
             DATAGRAM_SIZE,
             0,
-            (sockaddr *)&serverAddr,
-            sizeof(serverAddr)
+            (sockaddr *)&server_addr,
+            sizeof(server_addr)
         );
-        cout << "WRITE:>>>" << datagram << "<<<" << "\n";
+
+        if(debug) cout << "\n" << "WRITE:>>>" << string(datagram, DATAGRAM_SIZE) << "<<<" << "\n";
     }
 
     vector<string> split_payload(
@@ -222,23 +350,26 @@ struct ClientUDP{
 
     void send_message(
         int socket_fd,
-        sockaddr_in serverAddr,
+        sockaddr_in server_addr,
         const string &data
     ) {
+
+        // APPLY CHECKSUM
+
 
         // SINGLE DATAGRAM CASE
         if (data.size() <= PAYLOAD_SIZE) {
 
             string payload = data;
 
-            payload.append(
-                PAYLOAD_SIZE - payload.size(),
-                '#'
-            );
+            payload.append(PAYLOAD_SIZE - payload.size(), '#');
+
+            char hash = checksum(payload) + '0';
 
             send_datagram(
                 socket_fd,
-                serverAddr,
+                server_addr,
+                hash,
                 "11",
                 0,
                 payload
@@ -267,9 +398,12 @@ struct ClientUDP{
                 payload.append(PAYLOAD_SIZE - payload.size(), '@');
             }
 
+            char hash = checksum(payload) + '0';
+
             send_datagram(
                 socket_fd,
-                serverAddr,
+                server_addr,
+                hash,
                 flag,
                 i,
                 payload
@@ -292,28 +426,28 @@ struct ClientUDP{
         // ACTION
         protocol += action;
 
-        // NICKNAME
-        protocol += padNumber(nick_name.size(), 3);
+        // nick_name
+        protocol += pad_number(nick_name.size(), NICK_NAME_SIZE);
 
         protocol += nick_name;
 
         // DESTINATION
-        protocol += padNumber(destination.size(), 3);
+        protocol += pad_number(destination.size(), DESTINY_NICK_NAME_SIZE);
 
         protocol += destination;
 
         // MESSAGE
-        protocol += padNumber(message.size(), 5);
+        protocol += pad_number(message.size(), MESSAGE_SIZE);
 
         protocol += message;
 
-        // FILENAME
-        protocol += padNumber(file_name.size(), 11);
+        // file_name
+        protocol += pad_number(file_name.size(), FILE_NAME_SIZE);
 
         protocol += file_name;
 
         // FILE DATA
-        protocol += padNumber(file_data.size(), 20);
+        protocol += pad_number(file_data.size(), FILE_SIZE_SIZE);
 
         protocol += file_data;
 
@@ -328,48 +462,50 @@ struct ClientUDP{
 
         int idx = 0;
 
-        char action = data[idx++];
+        // ACTION
+        char action = data[idx];
+        idx += ACTION_SIZE;
 
-        // NICKNAME
-        int nick_size = stoi(data.substr(idx, 3));
+        // NICK_NAME
+        int nick_size = stoi(data.substr(idx, NICK_NAME_SIZE));
 
-        idx += 3;
+        idx += NICK_NAME_SIZE;
 
         string nick_name = data.substr(idx, nick_size);
 
         idx += nick_size;
 
         // DESTINATION
-        int destination_size = stoi(data.substr(idx, 3));
+        int destination_size = stoi(data.substr(idx, DESTINY_NICK_NAME_SIZE));
 
-        idx += 3;
+        idx += DESTINY_NICK_NAME_SIZE;
 
         string destination = data.substr(idx, destination_size);
 
         idx += destination_size;
 
         // MESSAGE
-        int messsage_size = stoi(data.substr(idx, 5));
+        int messsage_size = stoi(data.substr(idx, MESSAGE_SIZE));
 
-        idx += 5;
+        idx += MESSAGE_SIZE;
 
         string message = data.substr(idx, messsage_size);
 
         idx += messsage_size;
 
-        // FILENAME
-        int file_name_size = stoi(data.substr(idx, 11));
+        // file_name
+        int file_name_size = stoi(data.substr(idx, FILE_NAME_SIZE));
 
-        idx += 11;
+        idx += FILE_NAME_SIZE;
 
         string file_name = data.substr(idx, file_name_size);
 
         idx += file_name_size;
 
         // FILE SIZE
-        int file_size = stoi(data.substr(idx, 20));
+        int file_size = stoi(data.substr(idx, FILE_SIZE_SIZE));
 
-        idx += 20;
+        idx += FILE_SIZE_SIZE;
 
         string file_data = data.substr(idx, file_size);
 
@@ -420,6 +556,10 @@ struct ClientUDP{
                  << "\n";
         }
 
+        if (action == 'L') {
+            cout << "CONNECTED CLIENTS (JSON):\n" << message << "\n";
+        }
+
         cout << "=================================\n";
     }
 
@@ -429,7 +569,7 @@ struct ClientUDP{
 
         while (true) {
 
-            char buffer[DATAGRAM_SIZE];
+            char buffer[DATAGRAM_SIZE+1];
 
             sockaddr_in senderAddr{};
             socklen_t len = sizeof(senderAddr);
@@ -443,22 +583,27 @@ struct ClientUDP{
                     (sockaddr *)&senderAddr,
                     &len
                 );
-            cout << "READ:>>>" << buffer << "<<<" << "\n";
+
+            buffer[500] = '\0';
+
+            if(debug) cout << "\n" << "READ:>>>" << buffer << "<<<" << "\n";
             if (received <= 0)
                 continue;
 
             // HEADER
-            string flag(buffer, 2);
+            int idx = 0;
+            idx += HASH_SIZE;
 
-            string seqStr(buffer + 2,4);
+            string flag(buffer + idx, FLAG_SIZE);
+            idx += FLAG_SIZE;
+
+            string seqStr(buffer + idx, SEQUENCE_SIZE);
+            idx += SEQUENCE_SIZE;
 
             int sequence = stoi(seqStr);
 
             // PAYLOAD
-            string payload(
-                buffer + HEADER_SIZE,
-                PAYLOAD_SIZE
-            );
+            string payload(buffer + idx, PAYLOAD_SIZE);
 
             string senderKey =
                 string(inet_ntoa(senderAddr.sin_addr))
@@ -469,7 +614,7 @@ struct ClientUDP{
             if (flag == "11" &&
                 sequence == 0) {
 
-                payload = trimRight(payload, '#');
+                payload = trim_right(payload, '#');
 
                 parse_protocol(payload);
 
@@ -502,7 +647,7 @@ struct ClientUDP{
             else if (flag == "11") {
 
                 payload =
-                    trimRight(payload, '@');
+                    trim_right(payload, '@');
 
                 fragmentBuffer[senderKey].push_back({
                     sequence,
@@ -540,6 +685,7 @@ struct ClientUDP{
 
 int main(){
     ClientUDP client;
+    client.run();
 
     return 0;
 }
